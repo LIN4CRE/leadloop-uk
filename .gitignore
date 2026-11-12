@@ -1,4 +1,8 @@
 node_modules/
 test-results/
+playwright-report/
 .playwright/
-
+.vercel/
+coverage/
+.DS_Store
+*.log

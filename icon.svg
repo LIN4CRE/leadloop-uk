@@ -1,5 +1,23 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192">
-  <rect width="192" height="192" rx="42" fill="#7ee0bd"/>
-  <text x="96" y="105" text-anchor="middle" dominant-baseline="middle"
-        font-family="Arial,sans-serif" font-size="64" font-weight="700" fill="#10221c">LL</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="LeadLoop UK">
+  <defs>
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#111a2e"/>
+      <stop offset="100%" stop-color="#090e1a"/>
+    </linearGradient>
+    <linearGradient id="loopBright" x1="150" y1="100" x2="400" y2="380" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#5eead4"/>
+      <stop offset="100%" stop-color="#10b981"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="114" fill="url(#bgGrad)"/>
+  <rect x="14" y="14" width="484" height="484" rx="102" fill="none" stroke="#1e293b" stroke-width="6"/>
+  <!-- Right clockwise loop arc + crisp chevron head -->
+  <path d="M256 108 A 148 148 0 0 1 368 352" fill="none" stroke="url(#loopBright)" stroke-width="32" stroke-linecap="round"/>
+  <path d="M320 356 L370 356 L376 306" fill="none" stroke="#10b981" stroke-width="30" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Left clockwise loop arc + crisp chevron head -->
+  <path d="M256 404 A 148 148 0 0 1 144 160" fill="none" stroke="#2dd4bf" stroke-opacity="0.7" stroke-width="32" stroke-linecap="round"/>
+  <path d="M192 156 L142 156 L136 206" fill="none" stroke="#5eead4" stroke-width="30" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Crisp geometric LL monogram -->
+  <path d="M196 204v104h42" fill="none" stroke="#f8fafc" stroke-width="26" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M276 204v104h42" fill="none" stroke="#f8fafc" stroke-width="26" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>

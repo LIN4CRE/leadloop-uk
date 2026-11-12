@@ -1,154 +1,367 @@
-import {test,expect} from "@playwright/test";
+import { test, expect } from "@playwright/test";
+import AxeBuilder from "@axe-core/playwright";
 
-test.beforeEach(async({page})=>{
-  await page.goto("/blank.html");
-  await page.evaluate(async()=>{
-    await new Promise((resolve)=>{
-      const req=indexedDB.deleteDatabase("leadloop-uk");
-      req.onsuccess=()=>resolve();
-      req.onerror=()=>resolve();
-      req.onblocked=()=>resolve();
+async function resetLocalData(page) {
+  await page.goto("/tests/fixtures/blank.html");
+  await page.evaluate(async () => {
+    await new Promise((resolve) => {
+      const request = indexedDB.deleteDatabase("leadloop-uk");
+      request.onsuccess = request.onerror = request.onblocked = () => resolve();
     });
+    for (const key of await caches.keys())
+      if (key.startsWith("leadloop-uk-")) await caches.delete(key);
   });
   await page.goto("/");
-});
-
-async function addEnquiry(page,name="Test customer"){
-  await page.getByRole("button",{name:/add enquiry/i}).first().click();
-  await page.locator("#name").fill(name);
-  await page.locator("#job").fill("Regular house clean");
-  await page.locator("#phone").fill("07123 456789");
-  await page.locator("#email").fill("test@example.com");
-  await page.getByRole("button",{name:"Save enquiry"}).click();
-  await expect(page.locator(".lead")).toHaveCount(1);
+  await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
 }
 
-test("fresh start and empty-state action add first enquiry",async({page})=>{
-  await expect(page.getByText("Start with your first enquiry")).toBeVisible();
-  await page.locator('[data-action="empty-add"]').click();
-  await page.locator("#name").fill("First customer");
-  await page.locator("#job").fill("Garden tidy");
-  await page.getByRole("button",{name:"Save enquiry"}).click();
-  await expect(page.getByText("First customer")).toBeVisible();
+async function addEnquiry(
+  page,
+  name = "Test Customer",
+  job = "Regular house clean",
+) {
+  await page.getByRole("button", { name: "+ Add enquiry" }).first().click();
+  await page.locator("#leadName").fill(name);
+  await page.locator("#leadJob").fill(job);
+  await page.locator("#leadPhone").fill("07123 456789");
+  await page.locator("#leadEmail").fill("test@example.com");
+  await page.getByRole("button", { name: "Save enquiry" }).click();
+  await expect(page.locator("[data-lead-card]")).toHaveCount(1);
+}
+
+test.beforeEach(async ({ page }) => resetLocalData(page));
+
+test("first launch shows honest empty state, adding enquiry persists a linked customer", async ({
+  page,
+}) => {
+  await expect(page.getByText("Your pipeline starts here")).toBeVisible();
+  await addEnquiry(page, "Mina Example", "Garden tidy");
+  await page.reload();
+  await page.locator('[data-nav="customers"]').first().click();
+  await expect(
+    page.getByRole("heading", { name: "Mina Example" }),
+  ).toBeVisible();
+  await expect(page.getByText("1 linked enquiries")).toBeVisible();
 });
-test("add, edit, delete and persist a record after reload",async({page})=>{
+
+test("customer can be edited and hold multiple separate enquiries", async ({
+  page,
+}) => {
+  await addEnquiry(page, "Taylor Example", "Driveway clean");
+  await page.locator('[data-nav="customers"]').first().click();
+  await page.getByRole("button", { name: /Edit details/ }).click();
+  await page.locator("#customerName").fill("Taylor Updated");
+  await page.getByRole("button", { name: "Save customer" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Taylor Updated" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "+ Enquiry" }).click();
+  await page.locator("#leadJob").fill("Monthly window clean");
+  await page.getByRole("button", { name: "Save enquiry" }).click();
+  await expect(page.getByText("Enquiry & job history (2)")).toBeVisible();
+});
+
+test("enquiry stages can be changed and stage transitions persist", async ({
+  page,
+}) => {
   await addEnquiry(page);
-  await page.reload();await expect(page.getByText("Test customer")).toBeVisible();
-  await page.locator(".editBtn").click();
-  await page.locator("#name").fill("Edited customer");
-  await page.getByRole("button",{name:"Save enquiry"}).click();
-  await expect(page.getByText("Edited customer")).toBeVisible();
-  page.once("dialog",d=>d.accept());
-  await page.locator(".deleteBtn").click();
-  await expect(page.locator(".lead")).toHaveCount(0);
+  await page.locator(".stageSelect").selectOption({ label: "Contacted" });
+  await expect(page.locator(".stageSelect")).toHaveValue("Contacted");
+  await page.reload();
+  await page.locator('[data-nav="enquiries"]').first().click();
+  await expect(page.locator(".stageSelect")).toHaveValue("Contacted");
 });
-test("search and stage filtering work",async({page})=>{
-  await addEnquiry(page,"Alice");
-  await page.getByRole("button",{name:/add enquiry/i}).first().click();
-  await page.locator("#name").fill("Bob");await page.locator("#job").fill("Hedge trim");
-  await page.getByRole("button",{name:"Save enquiry"}).click();
-  await expect(page.locator(".lead")).toHaveCount(2);
-  await page.locator("#search").fill("Alice");await expect(page.locator(".lead")).toHaveCount(1);
-  await page.locator("#search").fill("");
-  await page.locator(".stageSelect").first().selectOption({label:"Won"});
-  await page.waitForTimeout(300);
-  await page.locator("#stageFilter").selectOption({label:"Won"});
-  await expect(page.locator(".lead")).toHaveCount(1);
-});
-test("quote persists before print and rendered document has totals",async({page})=>{
-  await addEnquiry(page);
-  await page.locator(".quoteBtn").click();
-  await page.locator("#items").fill("Labour | 2 | 45\nMaterials | 1 | 30");
-  await page.locator("#discount").fill("10");await page.locator("#vat").fill("20");
-  await page.evaluate(()=>{window.print=()=>{document.body.dataset.printed="yes";};});
-  await page.getByRole("button",{name:/save quote & print/i}).click();
-  await expect(page.locator("#printArea")).toContainText("£129.60");
-  await expect(page.locator("#printArea")).toContainText("Quotation LL-");
-  await expect(page.locator(".lead")).toContainText("£129.60");
+
+test("quotation builder calculates, saves revisions, and prints business document", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    window.print = () => {
+      document.body.dataset.printed = "yes";
+    };
+  });
+  await addEnquiry(page, "Quote Customer", "Two-room decoration");
+  await page.getByRole("button", { name: "Quote", exact: true }).click();
+  await page.locator("[data-price]").first().fill("100");
+  await page.locator("#qDiscount").fill("10");
+  await page.locator("#qVat").fill("20");
+  await expect(page.locator("#quoteSummary")).toContainText("£108.00");
+  await page.getByRole("button", { name: "Save quotation draft" }).click();
+  await expect(page.locator("[data-lead-card]")).toContainText("LL-");
+  await page.locator('[data-nav="quotes"]').first().click();
+  await expect(page.getByText("Quote Customer").first()).toBeVisible();
+  const row = page.locator("[data-quote-row]").first();
+  await page.evaluate(() => {
+    window.print = () => {
+      document.body.dataset.printed = "yes";
+    };
+  });
+  await row.getByRole("button", { name: "Print" }).click();
+  await expect(page.locator("#printArea")).toContainText("QUOTATION");
+  await expect(page.locator("#printArea")).toContainText("£108.00");
   expect(await page.locator("body").getAttribute("data-printed")).toBe("yes");
+  await row.getByRole("button", { name: "Update" }).click();
+  await page.locator("#quoteStatus").selectOption("Sent");
+  await page.getByRole("button", { name: "Save status" }).click();
+  await page
+    .locator("[data-quote-row]")
+    .first()
+    .getByRole("button", { name: "Revise" })
+    .click();
+  await page.getByRole("button", { name: "Save quotation draft" }).click();
+  await expect(page.locator("[data-quote-row]")).toHaveCount(2);
 });
-test("follow-up link opening does not confirm contact",async({page})=>{
+
+test("WhatsApp link opens only on explicit click; prepared and confirmed actions are distinct", async ({
+  page,
+  context,
+}) => {
+  await context.route("https://wa.me/**", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "text/html",
+      body: "Mocked external WhatsApp landing page",
+    }),
+  );
   await addEnquiry(page);
-  await page.locator(".followBtn").click();
-  await page.locator("#message").fill("Hello");
-  const popup=page.waitForEvent("popup");
-  await page.getByRole("button",{name:"Open WhatsApp"}).click();
-  const opened=await popup;await expect(opened).toHaveURL(/447123456789/);
-  await expect(page.locator(".lead")).toContainText("Link opened");
-  await expect(page.locator(".lead")).not.toContainText("Contact confirmed");
+  await page.getByRole("button", { name: "Message" }).click();
+  await page.locator("#msgBody").fill("Hello, this is a draft.");
+  const popupPromise = page.waitForEvent("popup");
+  await page.getByRole("button", { name: "Open message app" }).click();
+  const popup = await popupPromise;
+  await expect(popup).toHaveURL(/wa\.me\/447123456789/);
+  await popup.close();
+  await expect(page.locator("[data-lead-card]")).toContainText(
+    "Confirm contact",
+  );
+  const facts = await page.evaluate(async () => {
+    const db = await new Promise((resolve, reject) => {
+      const r = indexedDB.open("leadloop-uk");
+      r.onsuccess = () => resolve(r.result);
+      r.onerror = () => reject(r.error);
+    });
+    const leads = await new Promise((resolve) => {
+      const r = db.transaction("leads").objectStore("leads").getAll();
+      r.onsuccess = () => resolve(r.result);
+    });
+    db.close();
+    return leads[0];
+  });
+  expect(facts.preparedMessage).toBe("Hello, this is a draft.");
+  expect(facts.lastOpenedAt).toBeTruthy();
+  expect(facts.lastContactConfirmedAt).toBeFalsy();
+  await page.getByRole("button", { name: "Confirm contact" }).click();
+  await page.getByRole("button", { name: "Record contact" }).click();
+  const confirmed = await page.evaluate(async () => {
+    const db = await new Promise((resolve) => {
+      const r = indexedDB.open("leadloop-uk");
+      r.onsuccess = () => resolve(r.result);
+    });
+    const rows = await new Promise((resolve) => {
+      const r = db.transaction("leads").objectStore("leads").getAll();
+      r.onsuccess = () => resolve(r.result);
+    });
+    db.close();
+    return rows[0];
+  });
+  expect(confirmed.lastContactConfirmedAt).toBeTruthy();
+  await page.getByRole("button", { name: "Message" }).click();
+  await page.locator("#msgChannel").selectOption("email");
+  await page.getByRole("button", { name: "Open message app" }).click();
+  const emailOpened = await page.evaluate(async () => {
+    const db = await new Promise((resolve) => {
+      const r = indexedDB.open("leadloop-uk");
+      r.onsuccess = () => resolve(r.result);
+    });
+    const rows = await new Promise((resolve) => {
+      const r = db.transaction("leads").objectStore("leads").getAll();
+      r.onsuccess = () => resolve(r.result);
+    });
+    db.close();
+    return rows[0];
+  });
+  expect(emailOpened.lastOpenedChannel).toBe("email");
 });
-test("repeatedly preparing and editing a message works",async({page})=>{
-  await addEnquiry(page);
-  await page.locator(".followBtn").click();
-  for (let i=0;i<3;i++){
-    await page.locator("#message").fill(`Draft ${i}`);
-    await page.getByRole("button",{name:"Prepare draft"}).click();
-    await page.waitForTimeout(300);
-    await expect(page.locator("#message")).toHaveValue(`Draft ${i}`);
-  }
+
+test("repeat completion records a visit and advances an overdue won customer's schedule", async ({
+  page,
+}) => {
+  await addEnquiry(page, "Repeat Customer", "Monthly garden visit");
+  await page
+    .locator(".stageSelect")
+    .selectOption({ label: "Accepted / booked" });
+  await page.locator('[data-action="edit-lead"]').click();
+  await page.locator("#leadRepeat").fill("2020-01-31");
+  await page.locator("#leadInterval").selectOption("monthly");
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await expect(page.locator('[data-action="complete-repeat"]')).toBeVisible();
+  await page.locator('[data-action="complete-repeat"]').click();
+  await page.getByRole("button", { name: "Record visit" }).click();
+  await expect(page.locator("#toastRegion")).toContainText(/Visit recorded/);
+  const result = await page.evaluate(async () => {
+    const db = await new Promise((resolve) => {
+      const r = indexedDB.open("leadloop-uk");
+      r.onsuccess = () => resolve(r.result);
+    });
+    const read = (name) =>
+      new Promise((resolve) => {
+        const r = db.transaction(name).objectStore(name).getAll();
+        r.onsuccess = () => resolve(r.result);
+      });
+    const [leads, visits] = await Promise.all([read("leads"), read("visits")]);
+    db.close();
+    return { lead: leads[0], visits };
+  });
+  expect(result.visits).toHaveLength(1);
+  expect(result.lead.nextRepeat > new Date().toISOString().slice(0, 10)).toBe(
+    true,
+  );
 });
-test("invalid backup is rejected without clearing existing records",async({page})=>{
-  await addEnquiry(page);
-  const invalidHandler = d => { page.off("dialog", invalidHandler); d.accept(); };
-  page.on("dialog", invalidHandler);
+
+test("JSON backup, invalid restore rejection, and CSV export work", async ({
+  page,
+}) => {
+  await addEnquiry(page, "Backup Customer", "Gutter clearing");
+  await page.locator('[data-nav="settings"]').first().click();
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Download JSON backup" }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toMatch(/leadloop-backup-.*\.json/);
+  await page.getByRole("button", { name: "Restore JSON backup" }).click();
   await page.locator("#restoreFile").setInputFiles({
-    name:"bad.json",mimeType:"application/json",
-    buffer:Buffer.from(JSON.stringify({format:"leadloop-uk-backup",version:2,leads:[{id:"bad"}],settings:[]}))
+    name: "invalid.json",
+    mimeType: "application/json",
+    buffer: Buffer.from("{}"),
   });
-  await expect(page.getByText("Test customer")).toBeVisible();
-});
-test("valid backup restores and refreshes the UI",async({page})=>{
-  await addEnquiry(page,"Backup customer");
-  const backup=await page.evaluate(async()=>{
-    const db=await new Promise((res,rej)=>{const r=indexedDB.open("leadloop-uk",2);r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error);});
-    const leads=await new Promise(res=>{const r=db.transaction("leads").objectStore("leads").getAll();r.onsuccess=()=>res(r.result);});
-    return {format:"leadloop-uk-backup",version:2,leads,settings:[]};
+  await page
+    .getByRole("button", { name: "Choose and validate backup" })
+    .click();
+  await expect(page.locator("#toastRegion")).toContainText(
+    /Restore stopped safely/,
+  );
+  await page.locator('[data-nav="customers"]').first().click();
+  await expect(page.getByText("Backup Customer").first()).toBeVisible();
+  await page.locator('[data-nav="settings"]').first().click();
+  await page.getByRole("button", { name: "Restore JSON backup" }).click();
+  await page.locator("#restoreFile").setInputFiles({
+    name: "valid.json",
+    mimeType: "application/json",
+    buffer: Buffer.from(
+      JSON.stringify({
+        format: "leadloop-uk-backup",
+        version: 3,
+        customers: [
+          {
+            id: "restored-customer",
+            name: "Restored Customer",
+            phone: "",
+            email: "",
+            address: "",
+            postcode: "",
+            notes: "",
+          },
+        ],
+        leads: [],
+        quotes: [],
+        visits: [],
+        activities: [],
+        settings: [{ key: "business", value: "Restored business" }],
+        quarantine: [],
+      }),
+    ),
   });
-  const restoreHandler = d => { page.off("dialog", restoreHandler); d.accept(); };
-  page.on("dialog", restoreHandler);
-  await page.locator("#restoreFile").setInputFiles({name:"backup.json",mimeType:"application/json",buffer:Buffer.from(JSON.stringify(backup))});
-  await expect(page.getByText("Backup customer")).toBeVisible();
+  await page
+    .getByRole("button", { name: "Choose and validate backup" })
+    .click();
+  await expect(page.locator("#toastRegion")).toContainText(
+    "Backup validated and restored",
+  );
+  await page.locator('[data-nav="customers"]').first().click();
+  await expect(
+    page.getByRole("heading", { name: "Restored Customer" }),
+  ).toBeVisible();
+  await page.locator('[data-nav="settings"]').first().click();
+  const csvPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Export enquiries CSV" }).click();
+  expect((await csvPromise).suggestedFilename()).toMatch(/enquiries.*\.csv/);
 });
-test("migrates version 1 database records",async({page})=>{
-  await page.goto("/blank.html");
-  await page.evaluate(async()=>{
-    await new Promise((resolve)=>{
-      const req=indexedDB.deleteDatabase("leadloop-uk");
-      req.onsuccess=()=>resolve();
-      req.onerror=()=>resolve();
-      req.onblocked=()=>resolve();
+
+test("dark and light themes toggle; mobile and desktop widths have no horizontal overflow", async ({
+  page,
+}) => {
+  for (const width of [390, 768, 1024, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    const dimensions = await page.evaluate(() => ({
+      scroll: document.documentElement.scrollWidth,
+      client: document.documentElement.clientWidth,
+    }));
+    expect(dimensions.scroll).toBeLessThanOrEqual(dimensions.client + 1);
+    await page.screenshot({
+      path: `test-results/leadloop-${width}.png`,
+      fullPage: true,
     });
-  });
-  await page.evaluate(async()=>{
-    await new Promise((resolve,reject)=>{
-      const req=indexedDB.open("leadloop-uk",1);
-      req.onupgradeneeded=()=>{
-        const db=req.result;
-        const leads=db.createObjectStore("leads",{keyPath:"id"});
-        const settings=db.createObjectStore("settings",{keyPath:"key"});
-        leads.put({id:"legacy",customerName:"Legacy customer",jobDetails:"Old job",phoneNumber:"07123 456789",enquiryDate:"2026-01-01",followupDate:"2026-01-02",nextBooking:"2026-02-01",interval:"monthly",status:"quoted",quotation:{ref:"OLD-1",quoteDate:"2026-01-01",lines:[{name:"Labour",quantity:2,unitPrice:45}],discount:10,vat:20}});
-        settings.put({key:"business",value:"Old Biz"});
-      };
-      req.onsuccess=()=>{req.result.close();resolve();};
-      req.onerror=()=>reject(req.error);
-    });
-  });
-  await page.goto("/");
-  await expect(page.getByText("Legacy customer")).toBeVisible();
-  await page.locator(".followBtn").click();
-  await expect(page.locator("#message")).toBeVisible();
+  }
+  await page.locator("#themeBtn").click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await page.reload();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
 });
-test("service worker registers and shell loads after going offline",async({page,context})=>{
-  await page.goto("/");
-  await page.evaluate(()=>navigator.serviceWorker.ready);
+
+test("automated accessibility scan has no serious or critical violations on an empty dashboard", async ({
+  page,
+}) => {
+  const results = await new AxeBuilder({ page })
+    .withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"])
+    .analyze();
+  const serious = results.violations.filter((v) =>
+    ["serious", "critical"].includes(v.impact),
+  );
+  expect(
+    serious,
+    JSON.stringify(
+      serious.map((v) => ({
+        id: v.id,
+        description: v.description,
+        nodes: v.nodes.map((n) => n.target),
+      })),
+      null,
+      2,
+    ),
+  ).toEqual([]);
+  await page.getByRole("button", { name: "+ Add enquiry" }).first().click();
+  const modalResults = await new AxeBuilder({ page })
+    .withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"])
+    .analyze();
+  const modalSerious = modalResults.violations.filter((v) =>
+    ["serious", "critical"].includes(v.impact),
+  );
+  expect(
+    modalSerious,
+    JSON.stringify(
+      modalSerious.map((v) => ({
+        id: v.id,
+        nodes: v.nodes.map((n) => n.target),
+      })),
+      null,
+      2,
+    ),
+  ).toEqual([]);
+});
+
+test("service worker caches app shell and the manifest exposes valid PWA assets", async ({
+  page,
+  context,
+}) => {
+  const response = await page.request.get("/manifest.webmanifest");
+  expect(response.headers()["content-type"]).toContain(
+    "application/manifest+json",
+  );
+  const manifest = await response.json();
+  expect(manifest.icons.some((icon) => icon.sizes === "192x192")).toBe(true);
+  expect(manifest.icons.some((icon) => icon.sizes === "512x512")).toBe(true);
+  await page.evaluate(() => navigator.serviceWorker.ready);
   await context.setOffline(true);
   await page.reload();
-  await expect(page.getByRole("heading",{name:/LeadLoop/})).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
   await context.setOffline(false);
-});
-test("manifest is valid and lists required icons",async({page})=>{
-  const res=await page.goto("/manifest.webmanifest");
-  const json=await res.json();
-  expect(json.icons.some(i=>i.sizes==="192x192")).toBe(true);
-  expect(json.icons.some(i=>i.sizes==="512x512")).toBe(true);
 });

@@ -1,134 +1,433 @@
 <!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="theme-color" content="#10131a">
-  <meta name="description" content="A simple local-first enquiry and repeat-customer tracker for UK sole traders.">
-  <link rel="manifest" href="./manifest.webmanifest">
-  <link rel="icon" href="./icon.svg" type="image/svg+xml">
-  <title>LeadLoop UK</title>
-  <style>
-    :root {
-      color-scheme: dark; --bg:#10131a; --panel:#191e28; --panel2:#202735;
-      --text:#f2f5fa; --muted:#a6b0c0; --line:#30394a; --accent:#7ee0bd;
-      --danger:#ff9292; --shadow:0 16px 40px #0003;
-    }
-    [data-theme="light"] {
-      color-scheme:light; --bg:#f3f6fa; --panel:#fff; --panel2:#f2f5f9;
-      --text:#192230; --muted:#5d6878; --line:#dce3ec; --accent:#087d5b;
-      --danger:#b42318; --shadow:0 12px 35px #25364a12;
-    }
-    * { box-sizing:border-box }
-    body { margin:0; background:var(--bg); color:var(--text); font:15px/1.45 system-ui,-apple-system,Segoe UI,sans-serif }
-    button,input,select,textarea { font:inherit }
-    button { cursor:pointer }
-    .app { max-width:1180px; margin:auto; padding:24px }
-    header { display:flex; justify-content:space-between; align-items:center; gap:16px; margin-bottom:24px }
-    .brand { display:flex; align-items:center; gap:12px }
-    .mark { display:grid; place-items:center; width:42px; height:42px; background:var(--accent); color:#10221c; border-radius:13px; font-weight:900 }
-    h1 { margin:0; font-size:21px; letter-spacing:-.4px }
-    h2 { margin:0; font-size:18px }
-    .sub,.hint { color:var(--muted); font-size:13px }
-    .actions,.filters { display:flex; gap:8px; flex-wrap:wrap }
-    .actions { justify-content:flex-end }
-    .btn { padding:9px 13px; border:1px solid var(--line); color:var(--text); background:var(--panel); border-radius:10px }
-    .btn:hover { border-color:var(--accent) }
-    .btn.primary { color:#10221c; background:var(--accent); border-color:var(--accent); font-weight:700 }
-    .btn.danger { color:var(--danger) }
-    .grid { display:grid; gap:14px }
-    .stats { grid-template-columns:repeat(4,minmax(0,1fr)); margin-bottom:18px }
-    .card { background:var(--panel); border:1px solid var(--line); border-radius:16px; box-shadow:var(--shadow) }
-    .stat { padding:16px }
-    .stat .label { color:var(--muted); font-size:13px }
-    .stat .value { font-size:24px; font-weight:750; margin-top:6px }
-    .toolbar { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:14px; margin-bottom:12px }
-    .filters { flex:1 }
-    input,select,textarea { min-width:0; background:var(--bg); border:1px solid var(--line); color:var(--text); padding:10px 11px; border-radius:9px }
-    input:focus,select:focus,textarea:focus,button:focus-visible { outline:2px solid var(--accent); outline-offset:2px }
-    .filters input { flex:1; min-width:180px }
-    .filters select { min-width:175px }
-    .lead-list { display:grid; gap:10px }
-    .lead { padding:15px; display:grid; grid-template-columns:minmax(0,1fr) auto; gap:12px; align-items:center }
-    .lead h3 { margin:0 0 3px; font-size:16px }
-    .lead p { margin:3px 0; color:var(--muted); font-size:13px; overflow-wrap:anywhere }
-    .lead-actions { display:flex; gap:7px; flex-wrap:wrap; justify-content:flex-end; align-items:center }
-    .lead-actions select { max-width:190px }
-    .badge { display:inline-block; border:1px solid var(--line); border-radius:999px; padding:3px 8px; font-size:12px; color:var(--muted); margin:0 5px 4px 0 }
-    .badge.overdue { color:var(--danger); border-color:var(--danger) }
-    .empty { text-align:center; padding:42px 20px; color:var(--muted) }
-    .empty h2 { color:var(--text) }
-    .privacy { padding:14px; margin-top:16px; color:var(--muted); font-size:13px }
-    dialog { width:min(700px,calc(100% - 24px)); max-height:90vh; padding:0; color:var(--text); background:var(--panel); border:1px solid var(--line); border-radius:16px; box-shadow:var(--shadow) }
-    dialog::backdrop { background:#05080dba; backdrop-filter:blur(3px) }
-    .modal-head,.modal-foot { padding:15px 20px; border-bottom:1px solid var(--line) }
-    .modal-head { display:flex; justify-content:space-between; align-items:center }
-    .modal-body { padding:18px 20px; overflow:auto; max-height:65vh }
-    .modal-foot { border:0; border-top:1px solid var(--line); display:flex; justify-content:flex-end; flex-wrap:wrap; gap:8px }
-    .form-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px }
-    .field { display:grid; gap:5px }
-    .field.full { grid-column:1/-1 }
-    label { color:var(--muted); font-size:13px }
-    textarea { min-height:90px; resize:vertical }
-    #printArea { display:none }
-    @media(max-width:760px) {
-      .app { padding:16px } header { align-items:flex-start; flex-direction:column }
-      .actions { justify-content:flex-start } .stats { grid-template-columns:repeat(2,minmax(0,1fr)) }
-      .toolbar { align-items:stretch; flex-direction:column } .lead { grid-template-columns:1fr }
-      .lead-actions { justify-content:flex-start }
-    }
-    @media(max-width:460px) { .form-grid { grid-template-columns:1fr } .stats { gap:8px } .stat { padding:12px } }
-    @media print {
-      body > * { display:none !important }
-      #printArea { display:block !important; position:absolute; inset:0; padding:30px; color:#111; background:#fff; font:14px/1.5 Arial,sans-serif }
-      #printArea h1 { font-size:25px }
-      #printArea table { width:100%; border-collapse:collapse; margin-top:22px }
-      #printArea th,#printArea td { border-bottom:1px solid #ccc; padding:9px; text-align:left }
-      #printArea .total { text-align:right; margin-top:20px }
-    }
-  </style>
-</head>
-<body>
-  <main class="app">
-    <header>
-      <div class="brand">
-        <div class="mark" aria-hidden="true">LL</div>
-        <div><h1>LeadLoop <span class="sub">UK</span></h1><div class="sub">Recover enquiries. Remember repeat customers.</div></div>
-      </div>
-      <nav class="actions" aria-label="Application actions">
-        <button class="btn" id="installHelpBtn" type="button">How to install</button>
-        <button class="btn primary" id="installBtn" type="button" hidden>Install App</button>
-        <button class="btn" id="themeBtn" type="button">Switch theme</button>
-        <button class="btn" id="settingsBtn" type="button">Business details</button>
-        <button class="btn" id="csvBtn" type="button">Export CSV</button>
-        <button class="btn" id="backupBtn" type="button">JSON backup</button>
-        <button class="btn" id="restoreBtn" type="button">Restore backup</button>
-        <input id="restoreFile" type="file" accept=".json,application/json" hidden>
-        <button class="btn primary" id="addBtn" type="button">+ Add enquiry</button>
-      </nav>
-    </header>
+<html lang="en-GB" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#0b0f17" id="themeColorMeta" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta
+      name="apple-mobile-web-app-status-bar-style"
+      content="black-translucent"
+    />
+    <meta name="apple-mobile-web-app-title" content="LeadLoop UK" />
+    <meta
+      name="description"
+      content="Local-first enquiry recovery, professional quotations and repeat-customer reminders for UK sole traders and service businesses."
+    />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" href="./icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="./icon-192.png" />
+    <link rel="stylesheet" href="./styles.css" />
+    <title>LeadLoop UK — Enquiries, Quotations &amp; Repeat Business</title>
+  </head>
+  <body>
+    <a href="#mainContent" class="skip-link">Skip to main content</a>
 
-    <section id="stats" class="grid stats" aria-label="Dashboard"></section>
-    <section class="toolbar card">
-      <div class="filters">
-        <input id="search" type="search" placeholder="Search customers or job details" aria-label="Search enquiries">
-        <select id="stageFilter" aria-label="Filter by stage"><option value="">All stages</option></select>
-        <select id="dueFilter" aria-label="Filter follow-ups"><option value="">Any follow-up</option><option value="due">Due or overdue</option><option value="later">Scheduled later</option></select>
-      </div>
-      <span class="sub" id="resultCount"></span>
-    </section>
-    <section id="leadList" class="lead-list" aria-live="polite"></section>
-    <p class="privacy card">Data is stored in this browser on this device. It is not uploaded or automatically synced. Export a backup before clearing browser data or changing devices.</p>
-  </main>
+    <div class="shell">
+      <aside class="sidebar" aria-label="Workspace sidebar">
+        <div class="brand">
+          <img
+            src="./icon.svg"
+            alt=""
+            class="brand-mark"
+            width="38"
+            height="38"
+          />
+          <div>
+            <div class="brand-title">
+              LeadLoop <span class="brand-badge">UK</span>
+            </div>
+            <div class="brand-sub">Enquiries · Quotes · Repeat work</div>
+          </div>
+        </div>
 
-  <dialog id="modal" aria-labelledby="modalTitle">
-    <form id="modalForm">
-      <div class="modal-head"><h2 id="modalTitle"></h2><button class="btn" id="closeModal" type="button" aria-label="Close">×</button></div>
-      <div class="modal-body" id="modalBody"></div>
-      <div class="modal-foot" id="modalFoot"></div>
-    </form>
-  </dialog>
-  <div id="printArea"></div>
-  <script type="module" src="./app.js"></script>
-</body>
+        <nav aria-label="Primary navigation">
+          <ul class="nav-list" id="desktopNav">
+            <li>
+              <button
+                type="button"
+                class="nav-btn"
+                data-nav="dashboard"
+                aria-current="page"
+              >
+                <span class="nav-btn-left">
+                  <svg
+                    class="nav-icon"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    aria-hidden="true"
+                  >
+                    <rect x="3" y="3" width="7" height="7" rx="1.5" />
+                    <rect x="14" y="3" width="7" height="7" rx="1.5" />
+                    <rect x="3" y="14" width="7" height="7" rx="1.5" />
+                    <rect x="14" y="14" width="7" height="7" rx="1.5" />
+                  </svg>
+                  <span>Dashboard</span>
+                </span>
+              </button>
+            </li>
+            <li>
+              <button type="button" class="nav-btn" data-nav="enquiries">
+                <span class="nav-btn-left">
+                  <svg
+                    class="nav-icon"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    aria-hidden="true"
+                  >
+                    <path
+                      d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"
+                    />
+                    <rect x="9" y="3" width="6" height="4" rx="1" />
+                    <path d="M9 12h6M9 16h4" />
+                  </svg>
+                  <span>Enquiries</span>
+                </span>
+                <span class="nav-pill" id="navEnquiriesCount">0</span>
+              </button>
+            </li>
+            <li>
+              <button type="button" class="nav-btn" data-nav="customers">
+                <span class="nav-btn-left">
+                  <svg
+                    class="nav-icon"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    aria-hidden="true"
+                  >
+                    <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+                    <circle cx="9" cy="7" r="4" />
+                    <path
+                      d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"
+                    />
+                  </svg>
+                  <span>Customers</span>
+                </span>
+                <span class="nav-pill" id="navCustomersCount">0</span>
+              </button>
+            </li>
+            <li>
+              <button type="button" class="nav-btn" data-nav="quotes">
+                <span class="nav-btn-left">
+                  <svg
+                    class="nav-icon"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    aria-hidden="true"
+                  >
+                    <path
+                      d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"
+                    />
+                    <path d="M14 2v6h6M8 13h8M8 17h5" />
+                  </svg>
+                  <span>Quotations</span>
+                </span>
+                <span class="nav-pill" id="navQuotesCount">0</span>
+              </button>
+            </li>
+            <li>
+              <button type="button" class="nav-btn" data-nav="followups">
+                <span class="nav-btn-left">
+                  <svg
+                    class="nav-icon"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    aria-hidden="true"
+                  >
+                    <path
+                      d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"
+                    />
+                    <path d="M3 3v5h5" />
+                    <path
+                      d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"
+                    />
+                    <path d="M16 16h5v5" />
+                  </svg>
+                  <span>Follow-ups &amp; Repeat</span>
+                </span>
+                <span class="nav-pill" id="navDueCount" hidden>0</span>
+              </button>
+            </li>
+            <li>
+              <button type="button" class="nav-btn" data-nav="settings">
+                <span class="nav-btn-left">
+                  <svg
+                    class="nav-icon"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    aria-hidden="true"
+                  >
+                    <circle cx="12" cy="12" r="3" />
+                    <path
+                      d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"
+                    />
+                  </svg>
+                  <span>Settings &amp; Data</span>
+                </span>
+              </button>
+            </li>
+          </ul>
+        </nav>
+
+        <div class="sidebar-footer">
+          <button
+            class="btn primary"
+            id="sidebarInstallBtn"
+            type="button"
+            hidden
+          >
+            Install LeadLoop App
+          </button>
+          <div class="storage-note">
+            <strong id="pwaStatusLabel">Local-only browser storage</strong>
+            Records stay on this device and are not synced between devices.
+            Export a JSON backup regularly.
+          </div>
+        </div>
+      </aside>
+
+      <div class="workspace">
+        <header class="topbar">
+          <div class="topbar-left">
+            <div class="mobile-brand">
+              <img
+                src="./icon.svg"
+                alt=""
+                class="brand-mark"
+                width="32"
+                height="32"
+              />
+            </div>
+            <div>
+              <h1 class="page-title" id="pageTitle">LeadLoop UK</h1>
+              <p class="page-subtitle" id="pageSubtitle">
+                Recover enquiries, convert quotations and generate repeat
+                business.
+              </p>
+            </div>
+          </div>
+          <div class="topbar-actions" role="toolbar" aria-label="Quick actions">
+            <button class="btn sm primary" id="installBtn" type="button" hidden>
+              Install App
+            </button>
+            <button class="btn sm hide-xs" id="installHelpBtn" type="button">
+              Install guide
+            </button>
+            <button
+              class="btn sm"
+              id="themeBtn"
+              type="button"
+              aria-label="Switch colour theme"
+            >
+              Light theme
+            </button>
+            <button class="btn sm hide-xs" id="backupBtn" type="button">
+              JSON backup
+            </button>
+            <input
+              id="restoreFile"
+              type="file"
+              accept=".json,application/json"
+              hidden
+              aria-label="Select JSON backup file to restore"
+            />
+            <button class="btn primary" id="addBtn" type="button">
+              + Add enquiry
+            </button>
+          </div>
+        </header>
+
+        <main class="main-content" id="mainContent" tabindex="-1">
+          <div
+            id="swUpdateBanner"
+            class="banner"
+            role="region"
+            aria-label="Application update"
+            hidden
+          >
+            <span
+              >A new version of LeadLoop UK is ready to activate. Your local
+              records will be preserved.</span
+            >
+            <button type="button" class="btn sm primary" id="applyUpdateBtn">
+              Reload to update
+            </button>
+          </div>
+
+          <div id="offlineBanner" class="banner warning" role="status" hidden>
+            <span
+              >Offline mode active — working from local device storage. External
+              WhatsApp/email links require connectivity when sending.</span
+            >
+          </div>
+
+          <div
+            id="quarantineBanner"
+            class="banner warning"
+            role="region"
+            aria-label="Data recovery notice"
+            hidden
+          >
+            <span id="quarantineBannerText"
+              >Some legacy data required recovery attention during database
+              upgrade.</span
+            >
+            <button type="button" class="btn sm" id="viewQuarantineBtn">
+              View recovery report
+            </button>
+          </div>
+
+          <div id="viewContainer"></div>
+        </main>
+      </div>
+    </div>
+
+    <nav class="mobile-nav" id="mobileNav" aria-label="Mobile navigation">
+      <button
+        type="button"
+        class="mobile-nav-btn"
+        data-nav="dashboard"
+        aria-current="page"
+      >
+        <svg
+          class="btn-icon"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          aria-hidden="true"
+        >
+          <rect x="3" y="3" width="7" height="7" rx="1.5" />
+          <rect x="14" y="3" width="7" height="7" rx="1.5" />
+          <rect x="3" y="14" width="7" height="7" rx="1.5" />
+          <rect x="14" y="14" width="7" height="7" rx="1.5" />
+        </svg>
+        <span>Dashboard</span>
+      </button>
+      <button type="button" class="mobile-nav-btn" data-nav="enquiries">
+        <svg
+          class="btn-icon"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          aria-hidden="true"
+        >
+          <path
+            d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"
+          />
+          <rect x="9" y="3" width="6" height="4" rx="1" />
+        </svg>
+        <span>Enquiries</span>
+      </button>
+      <button type="button" class="mobile-nav-btn" data-nav="customers">
+        <svg
+          class="btn-icon"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          aria-hidden="true"
+        >
+          <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+          <circle cx="9" cy="7" r="4" />
+        </svg>
+        <span>Customers</span>
+      </button>
+      <button type="button" class="mobile-nav-btn" data-nav="followups">
+        <svg
+          class="btn-icon"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          aria-hidden="true"
+        >
+          <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+          <path d="M3 3v5h5" />
+          <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16" />
+          <path d="M16 16h5v5" />
+        </svg>
+        <span>Recovery</span>
+        <span class="mobile-nav-dot" id="mobileDueBadge" hidden>0</span>
+      </button>
+      <button type="button" class="mobile-nav-btn" data-nav="settings">
+        <svg
+          class="btn-icon"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          aria-hidden="true"
+        >
+          <circle cx="12" cy="12" r="3" />
+          <path
+            d="M12 2v3M12 19v3M4.93 4.93l2.12 2.12M16.95 16.95l2.12 2.12M2 12h3M19 12h3M4.93 19.07l2.12-2.12M16.95 7.05l2.12-2.12"
+          />
+        </svg>
+        <span>Settings</span>
+      </button>
+    </nav>
+
+    <dialog id="modal" aria-labelledby="modalTitle">
+      <form id="modalForm" novalidate>
+        <div class="modal-head">
+          <h2 id="modalTitle">Dialog</h2>
+          <button
+            class="btn sm subtle"
+            id="closeModal"
+            type="button"
+            aria-label="Close dialog"
+          >
+            ✕
+          </button>
+        </div>
+        <div class="modal-body" id="modalBody"></div>
+        <div class="modal-foot" id="modalFoot"></div>
+      </form>
+    </dialog>
+
+    <dialog id="confirmModal" class="narrow" aria-labelledby="confirmTitle">
+      <div class="modal-head">
+        <h2 id="confirmTitle">Confirm action</h2>
+        <button
+          class="btn sm subtle"
+          id="closeConfirmModal"
+          type="button"
+          aria-label="Close confirmation dialog"
+        >
+          ✕
+        </button>
+      </div>
+      <div class="modal-body" id="confirmBody"></div>
+      <div class="modal-foot" id="confirmFoot"></div>
+    </dialog>
+
+    <div
+      class="toast-region"
+      id="toastRegion"
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+    ></div>
+    <div id="printArea" aria-hidden="true"></div>
+
+    <script type="module" src="./app.js"></script>
+  </body>
 </html>

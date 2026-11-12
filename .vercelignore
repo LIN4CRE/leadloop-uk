@@ -1,0 +1,12 @@
+node_modules
+.git
+.github
+playwright-report
+test-results
+coverage
+README.md
+package.json
+package-lock.json
+playwright.config.js
+tests
+scripts
