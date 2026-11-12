@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#10131a">
+  <meta name="description" content="A simple local-first enquiry and repeat-customer tracker for UK sole traders.">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" href="./icon.svg" type="image/svg+xml">
+  <title>LeadLoop UK</title>
+  <style>
+    :root {
+      color-scheme: dark; --bg:#10131a; --panel:#191e28; --panel2:#202735;
+      --text:#f2f5fa; --muted:#a6b0c0; --line:#30394a; --accent:#7ee0bd;
+      --danger:#ff9292; --shadow:0 16px 40px #0003;
+    }
+    [data-theme="light"] {
+      color-scheme:light; --bg:#f3f6fa; --panel:#fff; --panel2:#f2f5f9;
+      --text:#192230; --muted:#5d6878; --line:#dce3ec; --accent:#087d5b;
+      --danger:#b42318; --shadow:0 12px 35px #25364a12;
+    }
+    * { box-sizing:border-box }
+    body { margin:0; background:var(--bg); color:var(--text); font:15px/1.45 system-ui,-apple-system,Segoe UI,sans-serif }
+    button,input,select,textarea { font:inherit }
+    button { cursor:pointer }
+    .app { max-width:1180px; margin:auto; padding:24px }
+    header { display:flex; justify-content:space-between; align-items:center; gap:16px; margin-bottom:24px }
+    .brand { display:flex; align-items:center; gap:12px }
+    .mark { display:grid; place-items:center; width:42px; height:42px; background:var(--accent); color:#10221c; border-radius:13px; font-weight:900 }
+    h1 { margin:0; font-size:21px; letter-spacing:-.4px }
+    h2 { margin:0; font-size:18px }
+    .sub,.hint { color:var(--muted); font-size:13px }
+    .actions,.filters { display:flex; gap:8px; flex-wrap:wrap }
+    .actions { justify-content:flex-end }
+    .btn { padding:9px 13px; border:1px solid var(--line); color:var(--text); background:var(--panel); border-radius:10px }
+    .btn:hover { border-color:var(--accent) }
+    .btn.primary { color:#10221c; background:var(--accent); border-color:var(--accent); font-weight:700 }
+    .btn.danger { color:var(--danger) }
+    .grid { display:grid; gap:14px }
+    .stats { grid-template-columns:repeat(4,minmax(0,1fr)); margin-bottom:18px }
+    .card { background:var(--panel); border:1px solid var(--line); border-radius:16px; box-shadow:var(--shadow) }
+    .stat { padding:16px }
+    .stat .label { color:var(--muted); font-size:13px }
+    .stat .value { font-size:24px; font-weight:750; margin-top:6px }
+    .toolbar { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:14px; margin-bottom:12px }
+    .filters { flex:1 }
+    input,select,textarea { min-width:0; background:var(--bg); border:1px solid var(--line); color:var(--text); padding:10px 11px; border-radius:9px }
+    input:focus,select:focus,textarea:focus,button:focus-visible { outline:2px solid var(--accent); outline-offset:2px }
+    .filters input { flex:1; min-width:180px }
+    .filters select { min-width:175px }
+    .lead-list { display:grid; gap:10px }
+    .lead { padding:15px; display:grid; grid-template-columns:minmax(0,1fr) auto; gap:12px; align-items:center }
+    .lead h3 { margin:0 0 3px; font-size:16px }
+    .lead p { margin:3px 0; color:var(--muted); font-size:13px; overflow-wrap:anywhere }
+    .lead-actions { display:flex; gap:7px; flex-wrap:wrap; justify-content:flex-end; align-items:center }
+    .lead-actions select { max-width:190px }
+    .badge { display:inline-block; border:1px solid var(--line); border-radius:999px; padding:3px 8px; font-size:12px; color:var(--muted); margin:0 5px 4px 0 }
+    .badge.overdue { color:var(--danger); border-color:var(--danger) }
+    .empty { text-align:center; padding:42px 20px; color:var(--muted) }
+    .empty h2 { color:var(--text) }
+    .privacy { padding:14px; margin-top:16px; color:var(--muted); font-size:13px }
+    dialog { width:min(700px,calc(100% - 24px)); max-height:90vh; padding:0; color:var(--text); background:var(--panel); border:1px solid var(--line); border-radius:16px; box-shadow:var(--shadow) }
+    dialog::backdrop { background:#05080dba; backdrop-filter:blur(3px) }
+    .modal-head,.modal-foot { padding:15px 20px; border-bottom:1px solid var(--line) }
+    .modal-head { display:flex; justify-content:space-between; align-items:center }
+    .modal-body { padding:18px 20px; overflow:auto; max-height:65vh }
+    .modal-foot { border:0; border-top:1px solid var(--line); display:flex; justify-content:flex-end; flex-wrap:wrap; gap:8px }
+    .form-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px }
+    .field { display:grid; gap:5px }
+    .field.full { grid-column:1/-1 }
+    label { color:var(--muted); font-size:13px }
+    textarea { min-height:90px; resize:vertical }
+    #printArea { display:none }
+    @media(max-width:760px) {
+      .app { padding:16px } header { align-items:flex-start; flex-direction:column }
+      .actions { justify-content:flex-start } .stats { grid-template-columns:repeat(2,minmax(0,1fr)) }
+      .toolbar { align-items:stretch; flex-direction:column } .lead { grid-template-columns:1fr }
+      .lead-actions { justify-content:flex-start }
+    }
+    @media(max-width:460px) { .form-grid { grid-template-columns:1fr } .stats { gap:8px } .stat { padding:12px } }
+    @media print {
+      body > * { display:none !important }
+      #printArea { display:block !important; position:absolute; inset:0; padding:30px; color:#111; background:#fff; font:14px/1.5 Arial,sans-serif }
+      #printArea h1 { font-size:25px }
+      #printArea table { width:100%; border-collapse:collapse; margin-top:22px }
+      #printArea th,#printArea td { border-bottom:1px solid #ccc; padding:9px; text-align:left }
+      #printArea .total { text-align:right; margin-top:20px }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <header>
+      <div class="brand">
+        <div class="mark" aria-hidden="true">LL</div>
+        <div><h1>LeadLoop <span class="sub">UK</span></h1><div class="sub">Recover enquiries. Remember repeat customers.</div></div>
+      </div>
+      <nav class="actions" aria-label="Application actions">
+        <button class="btn" id="installHelpBtn" type="button">How to install</button>
+        <button class="btn primary" id="installBtn" type="button" hidden>Install App</button>
+        <button class="btn" id="themeBtn" type="button">Switch theme</button>
+        <button class="btn" id="settingsBtn" type="button">Business details</button>
+        <button class="btn" id="csvBtn" type="button">Export CSV</button>
+        <button class="btn" id="backupBtn" type="button">JSON backup</button>
+        <button class="btn" id="restoreBtn" type="button">Restore backup</button>
+        <input id="restoreFile" type="file" accept=".json,application/json" hidden>
+        <button class="btn primary" id="addBtn" type="button">+ Add enquiry</button>
+      </nav>
+    </header>
+
+    <section id="stats" class="grid stats" aria-label="Dashboard"></section>
+    <section class="toolbar card">
+      <div class="filters">
+        <input id="search" type="search" placeholder="Search customers or job details" aria-label="Search enquiries">
+        <select id="stageFilter" aria-label="Filter by stage"><option value="">All stages</option></select>
+        <select id="dueFilter" aria-label="Filter follow-ups"><option value="">Any follow-up</option><option value="due">Due or overdue</option><option value="later">Scheduled later</option></select>
+      </div>
+      <span class="sub" id="resultCount"></span>
+    </section>
+    <section id="leadList" class="lead-list" aria-live="polite"></section>
+    <p class="privacy card">Data is stored in this browser on this device. It is not uploaded or automatically synced. Export a backup before clearing browser data or changing devices.</p>
+  </main>
+
+  <dialog id="modal" aria-labelledby="modalTitle">
+    <form id="modalForm">
+      <div class="modal-head"><h2 id="modalTitle"></h2><button class="btn" id="closeModal" type="button" aria-label="Close">×</button></div>
+      <div class="modal-body" id="modalBody"></div>
+      <div class="modal-foot" id="modalFoot"></div>
+    </form>
+  </dialog>
+  <div id="printArea"></div>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
