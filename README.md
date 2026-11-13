@@ -4,7 +4,7 @@ A lightweight, local-first enquiry, quotation and repeat-customer tracker for in
 
 ## What it does
 
-- Keeps **customers**, **enquiries/jobs**, **quotation revisions**, **completed visits**, **activity history**, settings and recovery records separately in IndexedDB.
+- Keeps **customers**, **enquiries/jobs**, **quotation revisions**, **completed visits**, **activity history**, settings and recovery records separately in IndexedDB (schema version 4; backups remain format version 3).
 - Tracks enquiries through New enquiry, Contacted, Quotation prepared, Quotation sent, Follow-up required, Accepted / booked, Completed and Lost.
 - Records optional customer contacts, service address, postcode, notes, dates, payment amounts confirmed by the user, and repeat service reminders.
 - Creates quote drafts with multiple categorized lines, quantities, unit prices, discounts, configurable VAT calculation, dates, expiry and terms. Quotes are printable from the browser print dialog, where the user can choose “Save as PDF”. Revisions are retained.
@@ -74,7 +74,11 @@ If Playwright's normal Chromium download is unavailable in a restricted environm
 
 LeadLoop stores information in the browser's IndexedDB on the current device and browser profile. It has no server account, cloud synchronisation or application-level encryption. Browser/device access controls and browser storage policies still apply; this application does not encrypt stored records. Data can be lost when browser storage is cleared, the browser profile is removed, or the device fails. Export a JSON backup regularly and store it securely; backups contain personal customer information. Restoring replaces the current LeadLoop records on that device after complete validation. CSV files may also contain personal information.
 
-The application is not legal, privacy or tax advice and does not itself establish regulatory compliance. Businesses remain responsible for deciding what data they collect, how long they retain it, how they respond to customer requests and which requirements apply to them. VAT is only a user-configured calculation rate, not tax status determination, tax advice or accounting.
+The application is not legal, privacy or tax advice and does not itself establish regulatory compliance. The ICO’s small-organisation guidance notes that sole traders may be controllers and that customer names/contact details are personal data; it highlights transparency, data minimisation, accuracy, retention and security. Using local storage does not discharge those responsibilities. Businesses remain responsible for deciding what data they collect, providing appropriate information to customers, how long records are kept, handling customer requests and which requirements apply. See the [ICO guide for sole traders](https://ico.org.uk/for-organisations/advice-for-small-organisations/news-blogs-and-events/blogs/data-protection-when-it-s-just-you-top-three-tips-for-sole-traders/) and [data protection principles](https://ico.org.uk/for-organisations/advice-for-small-organisations/getting-started-with-gdpr/data-protection-principles-definitions-and-key-terms/). This product does not collect consent or provide a privacy notice generator. VAT is only a user-configured calculation rate, not tax status determination, tax advice or accounting.
+
+## Pilot testing
+
+See [PILOT.md](./PILOT.md) for a beginner setup guide, realistic test tasks, a copyable feedback form, validation questions and evidence-based success measures.
 
 ## Deployment
 

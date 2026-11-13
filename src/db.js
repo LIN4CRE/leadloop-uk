@@ -60,8 +60,9 @@ function ensureStoresAndIndexes(db, tx) {
     if (db.objectStoreNames.contains(spec.name)) {
       store = tx.objectStore(spec.name);
       if (store.keyPath !== spec.keyPath) {
-        db.deleteObjectStore(spec.name);
-        store = db.createObjectStore(spec.name, { keyPath: spec.keyPath });
+        throw new Error(
+          `Cannot safely upgrade the ${spec.name} store: its key path differs from the expected schema. The upgrade was stopped without changing existing records.`,
+        );
       }
     } else {
       store = db.createObjectStore(spec.name, { keyPath: spec.keyPath });
@@ -380,6 +381,9 @@ export function openDatabase(dbName = DB_NAME, options = {}) {
               tx.abort();
             };
           }
+        } else {
+          // v3 -> v4 is additive. Refuse key-path changes rather than deleting user records.
+          ensureStoresAndIndexes(db, tx);
         }
       } catch (err) {
         abortedReason = err;
@@ -389,7 +393,11 @@ export function openDatabase(dbName = DB_NAME, options = {}) {
       }
     };
 
-    req.onsuccess = () => resolve(req.result);
+    req.onsuccess = () => {
+      const db = req.result;
+      db.onversionchange = () => db.close();
+      resolve(db);
+    };
     req.onerror = () =>
       reject(
         abortedReason || req.error || new Error("Could not open database."),

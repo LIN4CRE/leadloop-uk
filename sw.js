@@ -1,6 +1,6 @@
 const CACHE_PREFIX = "leadloop-uk-";
-const CACHE_NAME = `${CACHE_PREFIX}shell-v4`;
-
+const CACHE_NAME = `${CACHE_PREFIX}shell-v5`;
+const SCOPE_URL = new URL(self.registration.scope);
 const SHELL_ASSETS = [
   "./",
   "./index.html",
@@ -22,38 +22,36 @@ const SHELL_ASSETS = [
   "./icon-192.png",
   "./icon-512.png",
   "./icon-maskable-512.png",
-];
+].map((path) => new URL(path, SCOPE_URL).href);
+
+function isInAppScope(url) {
+  return (
+    url.origin === SCOPE_URL.origin &&
+    url.pathname.startsWith(SCOPE_URL.pathname)
+  );
+}
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
-    caches
-      .open(CACHE_NAME)
-      .then((cache) => cache.addAll(SHELL_ASSETS))
-      .then(() => {
-        // Activate immediately on initial install so offline shell works right away;
-        // on upgrades, UI can also trigger SKIP_WAITING explicitly.
-        if (!self.registration.active) {
-          return self.skipWaiting();
-        }
-      }),
+    caches.open(CACHE_NAME).then(async (cache) => {
+      await cache.addAll(SHELL_ASSETS);
+      // First install needs to control the app for offline use. Updates wait for
+      // the user's explicit Apply update action in the application UI.
+      if (!self.registration.active) await self.skipWaiting();
+    }),
   );
 });
 
 self.addEventListener("message", (event) => {
-  if (event.data && event.data.type === "SKIP_WAITING") {
-    self.skipWaiting();
-  }
+  if (event.data?.type === "SKIP_WAITING") event.waitUntil(self.skipWaiting());
 });
 
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     (async () => {
-      const keys = await caches.keys();
-      for (const key of keys) {
-        // Strictly delete ONLY outdated LeadLoop UK caches — never touch other apps' caches.
-        if (key.startsWith(CACHE_PREFIX) && key !== CACHE_NAME) {
+      for (const key of await caches.keys()) {
+        if (key.startsWith(CACHE_PREFIX) && key !== CACHE_NAME)
           await caches.delete(key);
-        }
       }
       await self.clients.claim();
     })(),
@@ -61,61 +59,48 @@ self.addEventListener("activate", (event) => {
 });
 
 self.addEventListener("fetch", (event) => {
-  const req = event.request;
-  if (req.method !== "GET") return;
-  const url = new URL(req.url);
-  if (url.origin !== self.location.origin) return;
-
-  if (req.mode === "navigate") {
-    event.respondWith(
-      fetch(req)
-        .then((response) => {
-          if (response && response.ok) {
-            const copy = response.clone();
-            caches
-              .open(CACHE_NAME)
-              .then((cache) => cache.put("./index.html", copy));
-          }
-          return response;
-        })
-        .catch(
-          async () =>
-            (await caches.match("./index.html")) || (await caches.match("./")),
-        ),
-    );
-    return;
-  }
-
-  // Network-first with cache fallback for JS/CSS/manifest so updates are never trapped in stale files,
-  // and stale-while-revalidate for static icons.
-  const isImage = /\.(png|svg|ico|webp)$/i.test(url.pathname);
-  if (isImage) {
-    event.respondWith(
-      caches.match(req).then((cached) => {
-        const netFetch = fetch(req)
-          .then((res) => {
-            if (res && res.ok) {
-              const copy = res.clone();
-              caches.open(CACHE_NAME).then((c) => c.put(req, copy));
-            }
-            return res;
-          })
-          .catch(() => cached);
-        return cached || netFetch;
-      }),
-    );
-    return;
-  }
+  const request = event.request;
+  if (request.method !== "GET") return;
+  const url = new URL(request.url);
+  // A shared host may run other apps and service workers: only handle this
+  // registration's own origin + path scope and never perform global cache matches.
+  if (!isInAppScope(url)) return;
 
   event.respondWith(
-    fetch(req)
-      .then((response) => {
-        if (response && response.ok) {
-          const copy = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(req, copy));
+    (async () => {
+      const cache = await caches.open(CACHE_NAME);
+      if (request.mode === "navigate") {
+        try {
+          const response = await fetch(request);
+          if (response.ok) await cache.put(request, response.clone());
+          return response;
+        } catch {
+          return (
+            (await cache.match(request)) ||
+            (await cache.match(new URL("index.html", SCOPE_URL).href))
+          );
         }
+      }
+
+      const cached = await cache.match(request);
+      const image = /\.(?:png|svg|ico|webp)$/i.test(url.pathname);
+      if (image && cached) {
+        event.waitUntil(
+          fetch(request)
+            .then(
+              (response) => response.ok && cache.put(request, response.clone()),
+            )
+            .catch(() => undefined),
+        );
+        return cached;
+      }
+      try {
+        const response = await fetch(request);
+        if (response.ok) await cache.put(request, response.clone());
         return response;
-      })
-      .catch(() => caches.match(req)),
+      } catch {
+        return cached || Response.error();
+      }
+    })(),
   );
 });

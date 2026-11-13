@@ -67,6 +67,9 @@ export {
   parseCustomTemplates,
   getAllTemplates,
   renderMessageTemplate,
+  TEMPLATE_CATEGORIES,
+  TEMPLATE_VARIABLES,
+  validateMessageTemplate,
 } from "./src/templates.js";
 
 export {

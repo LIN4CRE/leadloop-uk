@@ -13,6 +13,7 @@
     "format:check": "prettier --check \"**/*.{js,mjs,json,css,html,md,yml,yaml}\"",
     "format": "prettier --write \"**/*.{js,mjs,json,css,html,md,yml,yaml}\"",
     "build:check": "node scripts/build-check.mjs",
+    "build": "npm run build:check",
     "check": "npm run format:check && npm run test:unit && npm run build:check"
   },
   "devDependencies": {

@@ -1,6 +1,7 @@
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import { indexedDB } from "fake-indexeddb";
+import { migrateLead } from "../src/migration.js";
 import {
   openDatabase,
   loadAllState,
@@ -64,10 +65,10 @@ after(async () => {
   for (const name of names) await deleteDb(name);
 });
 
-test("fresh database creates all v3 stores and persists records", async () => {
+test("fresh database creates all v4 stores and persists records", async () => {
   const name = newName();
   const db = await openDatabase(name);
-  assert.equal(db.version, 3);
+  assert.equal(db.version, 4);
   for (const store of [
     "customers",
     "leads",
@@ -239,4 +240,121 @@ test("backup restores atomically, validates before mutation, resets settings and
   await eraseAllDataInDB(db);
   assert.equal((await loadAllState(db)).customers.length, 0);
   db.close();
+});
+
+test("v3 to v4 additive upgrade retains existing records and adds missing indexes", async () => {
+  const name = newName();
+  await seedLegacy(name, 3, [
+    ["customers", [{ id: "customer-v3", name: "Retained" }]],
+    ["leads", [{ id: "lead-v3", customerId: "customer-v3" }]],
+    ["quotes", []],
+    ["visits", []],
+    ["activities", []],
+    ["settings", [], "key"],
+    ["quarantine", []],
+  ]);
+  const db = await openDatabase(name);
+  assert.equal(db.version, 4);
+  const customers = await new Promise((resolve, reject) => {
+    const request = db
+      .transaction("customers")
+      .objectStore("customers")
+      .getAll();
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+  assert.equal(customers[0].id, "customer-v3");
+  assert.equal(
+    db
+      .transaction("leads")
+      .objectStore("leads")
+      .indexNames.contains("by_customerId"),
+    true,
+  );
+  db.close();
+});
+
+test("unsafe key-path upgrade aborts without deleting or rewriting the existing store", async () => {
+  const name = newName();
+  await seedLegacy(name, 3, [
+    [
+      "leads",
+      [{ id: "raw-key", customerId: "keep", data: "untouched" }],
+      "customerId",
+    ],
+  ]);
+  await assert.rejects(openDatabase(name), /key path differs/i);
+  const request = indexedDB.open(name);
+  const db = await new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+  assert.equal(db.version, 3);
+  const rows = await new Promise((resolve, reject) => {
+    const get = db.transaction("leads").objectStore("leads").get("keep");
+    get.onsuccess = () => resolve(get.result);
+    get.onerror = () => reject(get.error);
+  });
+  assert.deepEqual(rows, {
+    id: "raw-key",
+    customerId: "keep",
+    data: "untouched",
+  });
+  db.close();
+});
+
+test("open connection closes on versionchange so another application tab can upgrade", async () => {
+  const name = newName();
+  const db = await openDatabase(name);
+  await putInStore(db, "customers", {
+    id: "concurrent-customer",
+    name: "Concurrent",
+  });
+  const newer = await new Promise((resolve, reject) => {
+    const request = indexedDB.open(name, 5);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+    request.onblocked = () =>
+      reject(new Error("Versionchange was unexpectedly blocked"));
+  });
+  // The old connection is closed promptly, allowing the version upgrade to continue.
+  assert.throws(
+    () => db.transaction("customers"),
+    /closed|not connected|inactive/i,
+  );
+  const customer = await new Promise((resolve, reject) => {
+    const request = newer
+      .transaction("customers")
+      .objectStore("customers")
+      .get("concurrent-customer");
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+  assert.equal(customer.name, "Concurrent");
+  newer.close();
+});
+
+test("restore migrates v1 and v2 backups into linked current records without loss", async () => {
+  for (const version of [1, 2]) {
+    const name = newName();
+    const db = await openDatabase(name);
+    const backup = {
+      format: "leadloop-uk-backup",
+      version,
+      leads: [version === 1 ? oldLead : migrateLead(oldLead)],
+      settings:
+        version === 1
+          ? { businessName: "Legacy business" }
+          : [{ key: "business", value: "Legacy business" }],
+    };
+    const restored = await restoreBackupToDB(db, backup);
+    const state = await loadAllState(db);
+    assert.equal(restored.version, 3);
+    assert.equal(state.leads.length, 1);
+    assert.equal(state.customers.length, 1);
+    assert.equal(state.leads[0].customerId, state.customers[0].id);
+    assert.equal(state.settings.business, "Legacy business");
+    assert.equal(state.quotes.length, 1);
+    db.close();
+  }
 });

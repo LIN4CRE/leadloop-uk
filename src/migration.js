@@ -1000,6 +1000,44 @@ export function validateBackup(input) {
   quotesCopy = derived.quotes;
   activitiesCopy = derived.activities;
 
+  const customersById = new Map(customersCopy.map((c) => [c.id, c]));
+  const leadsById = new Map(finalLeads.map((l) => [l.id, l]));
+  for (const lead of finalLeads) {
+    if (!customersById.has(lead.customerId))
+      throw new Error("Backup enquiry refers to a missing customer.");
+  }
+  for (const quote of quotesCopy) {
+    const lead = leadsById.get(quote.leadId);
+    if (
+      !lead ||
+      !customersById.has(quote.customerId) ||
+      quote.customerId !== lead.customerId
+    )
+      throw new Error(
+        "Backup quotation refers to a missing or mismatched enquiry/customer.",
+      );
+  }
+  for (const visit of visitsCopy) {
+    const lead = leadsById.get(visit.leadId);
+    if (!lead || (visit.customerId && visit.customerId !== lead.customerId))
+      throw new Error(
+        "Backup visit refers to a missing or mismatched enquiry/customer.",
+      );
+    if (visit.customerId && !customersById.has(visit.customerId))
+      throw new Error("Backup visit refers to a missing customer.");
+  }
+  for (const activity of activitiesCopy) {
+    const lead = activity.leadId ? leadsById.get(activity.leadId) : null;
+    if (activity.leadId && !lead)
+      throw new Error("Backup activity refers to a missing enquiry.");
+    if (activity.customerId && !customersById.has(activity.customerId))
+      throw new Error("Backup activity refers to a missing customer.");
+    if (lead && activity.customerId && activity.customerId !== lead.customerId)
+      throw new Error(
+        "Backup activity refers to a mismatched enquiry/customer.",
+      );
+  }
+
   const quarantineCopy = [];
   if (input.quarantine != null) {
     if (!Array.isArray(input.quarantine)) {
