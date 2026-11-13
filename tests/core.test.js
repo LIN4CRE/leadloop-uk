@@ -303,3 +303,111 @@ test("legacy lead / quote migration and unambiguous customer duplicate warnings"
     1,
   );
 });
+
+test("date-only arithmetic remains civil-calendar based across DST and leap dates", async () => {
+  const { addDays, daysBetween } = await import("../core.js");
+  const previousTz = process.env.TZ;
+  process.env.TZ = "Europe/London";
+  try {
+    assert.equal(addDays("2026-03-28", 1), "2026-03-29");
+    assert.equal(addDays("2026-03-29", 1), "2026-03-30");
+    assert.equal(daysBetween("2026-03-28", "2026-03-30"), 2);
+    assert.equal(addDays("2024-02-28", 1), "2024-02-29");
+    assert.equal(addDays("2024-02-29", 1), "2024-03-01");
+  } finally {
+    if (previousTz === undefined) delete process.env.TZ;
+    else process.env.TZ = previousTz;
+  }
+});
+
+test("message templates validate content and safely render supported customer fields", async () => {
+  const { validateMessageTemplate, renderMessageTemplate } =
+    await import("../core.js");
+  const clean = validateMessageTemplate({
+    name: " Friendly follow up ",
+    category: "initial",
+    subject: "Hi {firstName}",
+    body: "Hello {firstName}, {job} from {business}",
+  });
+  assert.equal(clean.name, "Friendly follow up");
+  assert.throws(() => validateMessageTemplate({ name: "", body: "" }), /name/);
+  assert.throws(
+    () => validateMessageTemplate({ name: "OK", body: " " }),
+    /content/,
+  );
+  assert.equal(
+    renderMessageTemplate(
+      clean.body,
+      { name: "Alex Taylor", job: "window clean" },
+      { business: "North Star" },
+    ),
+    "Hello Alex, window clean from North Star",
+  );
+});
+
+test("backup rejects orphaned quote, visit and activity foreign-key references", () => {
+  const base = {
+    format: "leadloop-uk-backup",
+    version: 3,
+    customers: [
+      {
+        id: "c1",
+        name: "Customer",
+        phone: "",
+        email: "",
+        address: "",
+        postcode: "",
+        notes: "",
+      },
+    ],
+    leads: [{ ...legacyLead, id: "l1", customerId: "c1", quote: null }],
+    quotes: [],
+    visits: [],
+    activities: [],
+    settings: [],
+    quarantine: [],
+  };
+  const quote = {
+    id: "q1",
+    leadId: "missing-lead",
+    customerId: "c1",
+    reference: "Q-1",
+    date: "2026-01-01",
+    items: [{ description: "Work", qty: 1, price: 10 }],
+    discount: 0,
+    vat: 0,
+    subtotal: 10,
+    discountAmount: 0,
+    vatAmount: 0,
+    total: 10,
+  };
+  assert.throws(
+    () => validateBackup({ ...base, quotes: [quote] }),
+    /quotation refers/i,
+  );
+  assert.throws(
+    () =>
+      validateBackup({
+        ...base,
+        visits: [
+          { id: "v1", leadId: "missing-lead", completedDate: "2026-01-01" },
+        ],
+      }),
+    /visit refers/i,
+  );
+  assert.throws(
+    () =>
+      validateBackup({
+        ...base,
+        activities: [
+          {
+            id: "a1",
+            leadId: "missing-lead",
+            summary: "Contacted",
+            createdAt: "2026-01-01T12:00:00Z",
+          },
+        ],
+      }),
+    /activity refers/i,
+  );
+});

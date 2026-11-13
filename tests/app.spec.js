@@ -13,6 +13,12 @@ async function resetLocalData(page) {
   });
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
+  await expect(page.locator("html")).toHaveAttribute("data-app-ready", "true");
+  const onboarding = page.getByRole("dialog", { name: "Welcome to LeadLoop" });
+  if (await onboarding.isVisible()) {
+    await page.getByRole("button", { name: "Not now" }).click();
+    await expect(onboarding).not.toBeVisible();
+  }
 }
 
 async function addEnquiry(
@@ -110,6 +116,12 @@ test("quotation builder calculates, saves revisions, and prints business documen
     .click();
   await page.getByRole("button", { name: "Save quotation draft" }).click();
   await expect(page.locator("[data-quote-row]")).toHaveCount(2);
+  await page.locator('#desktopNav [data-nav="customers"]').click();
+  await expect(
+    page.getByRole("heading", { name: "Quote Customer" }),
+  ).toBeVisible();
+  await expect(page.getByText("Quotation history (2)")).toBeVisible();
+  await expect(page.getByText(/Revision 2/).first()).toBeVisible();
 });
 
 test("WhatsApp link opens only on explicit click; prepared and confirmed actions are distinct", async ({
@@ -194,6 +206,9 @@ test("repeat completion records a visit and advances an overdue won customer's s
   await page.locator("#leadRepeat").fill("2020-01-31");
   await page.locator("#leadInterval").selectOption("monthly");
   await page.getByRole("button", { name: "Save changes" }).click();
+  await page.locator('[data-action="edit-lead"]').click();
+  await page.locator("#leadRepeat").fill("2020-01-15");
+  await page.getByRole("button", { name: "Save changes" }).click();
   await expect(page.locator('[data-action="complete-repeat"]')).toBeVisible();
   await page.locator('[data-action="complete-repeat"]').click();
   await page.getByRole("button", { name: "Record visit" }).click();
@@ -213,6 +228,7 @@ test("repeat completion records a visit and advances an overdue won customer's s
     return { lead: leads[0], visits };
   });
   expect(result.visits).toHaveLength(1);
+  expect(result.lead.repeatAnchorDay).toBe(15);
   expect(result.lead.nextRepeat > new Date().toISOString().slice(0, 10)).toBe(
     true,
   );
@@ -301,6 +317,17 @@ test("dark and light themes toggle; mobile and desktop widths have no horizontal
       fullPage: true,
     });
   }
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.locator("#mobileNav")).toBeVisible();
+  await expect(page.locator("#mobileNav [data-nav]")).toHaveCount(6);
+  await page.locator('#mobileNav [data-nav="quotes"]').click();
+  await expect(
+    page.getByRole("heading", { name: "Quotations", exact: true }),
+  ).toBeVisible();
+  await page.locator('#mobileNav [data-nav="followups"]').click();
+  await expect(
+    page.getByRole("heading", { name: "Follow-ups & Repeat" }),
+  ).toBeVisible();
   await page.locator("#themeBtn").click();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
   await page.reload();
@@ -359,9 +386,335 @@ test("service worker caches app shell and the manifest exposes valid PWA assets"
   const manifest = await response.json();
   expect(manifest.icons.some((icon) => icon.sizes === "192x192")).toBe(true);
   expect(manifest.icons.some((icon) => icon.sizes === "512x512")).toBe(true);
-  await page.evaluate(() => navigator.serviceWorker.ready);
+  await page.evaluate(async () => {
+    await navigator.serviceWorker.ready;
+    const db = await new Promise((resolve, reject) => {
+      const request = indexedDB.open("leadloop-uk");
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction("customers", "readwrite");
+      tx.objectStore("customers").put({
+        id: "offline-customer",
+        name: "Offline retained",
+      });
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+    });
+    db.close();
+    await caches.open("unrelated-product-cache");
+  });
+  const managedCaches = await page.evaluate(() => caches.keys());
+  expect(managedCaches.some((key) => key.startsWith("leadloop-uk-"))).toBe(
+    true,
+  );
+  expect(managedCaches).toContain("unrelated-product-cache");
   await context.setOffline(true);
   await page.reload();
   await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
+  const persisted = await page.evaluate(async () => {
+    const db = await new Promise((resolve, reject) => {
+      const request = indexedDB.open("leadloop-uk");
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const result = await new Promise((resolve, reject) => {
+      const request = db
+        .transaction("customers")
+        .objectStore("customers")
+        .get("offline-customer");
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    db.close();
+    return result?.name;
+  });
+  expect(persisted).toBe("Offline retained");
+  const failedUncached = await page.evaluate(async () => {
+    try {
+      await fetch("/uncached-offline-asset.js");
+      return false;
+    } catch {
+      return true;
+    }
+  });
+  expect(failedUncached).toBe(true);
   await context.setOffline(false);
+  expect(
+    await page.evaluate(async () => (await fetch("/index.html")).status),
+  ).toBe(200);
+});
+
+test("first-run onboarding explains local storage and leads into a real first enquiry", async ({
+  page,
+}) => {
+  await page.goto("/tests/fixtures/blank.html");
+  await page.evaluate(async () => {
+    await new Promise((resolve) => {
+      const r = indexedDB.deleteDatabase("leadloop-uk");
+      r.onsuccess = r.onerror = r.onblocked = resolve;
+    });
+  });
+  await page.goto("/");
+  const dialog = page.getByRole("dialog", { name: "Welcome to LeadLoop" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText("There is no cloud sync");
+  const onboardingA11y = await new AxeBuilder({ page })
+    .withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"])
+    .analyze();
+  expect(
+    onboardingA11y.violations.filter((v) =>
+      ["serious", "critical"].includes(v.impact),
+    ),
+  ).toEqual([]);
+  await page.locator("#onboardBusiness").fill("North Star Garden Care");
+  await page
+    .locator("#onboardType")
+    .selectOption({ label: "Gardening & Landscaping" });
+  await page
+    .getByRole("button", { name: "Save and add first enquiry" })
+    .click();
+  await expect(page.getByRole("dialog", { name: "Add enquiry" })).toBeVisible();
+  await page.locator("#leadName").fill("Sam Sample");
+  await page.locator("#leadJob").fill("Lawn tidy");
+  await page.getByRole("button", { name: "Save enquiry" }).click();
+  await expect(page.locator("[data-lead-card]")).toContainText("Sam Sample");
+});
+
+test("visual template manager creates, previews, duplicates, selects and deletes a template", async ({
+  page,
+}) => {
+  await addEnquiry(page, "Template Customer", "Regular window clean");
+  await page.locator('[data-nav="settings"]').first().click();
+  await page.getByRole("button", { name: "Create template" }).click();
+  const templateA11y = await new AxeBuilder({ page })
+    .withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"])
+    .analyze();
+  expect(
+    templateA11y.violations.filter((v) =>
+      ["serious", "critical"].includes(v.impact),
+    ),
+  ).toEqual([]);
+  await page.locator("#templateName").fill("Pilot enquiry note");
+  await page.locator("#templateCategory").selectOption("initial");
+  await page.locator("#templateSubject").fill("Checking in about {job}");
+  await page.locator("#templateBody").fill("Hello ");
+  await page.getByRole("button", { name: "{firstName}" }).click();
+  await page.keyboard.type(", thanks for asking about {job}.");
+  await expect(page.locator("#templateBody")).toHaveValue(
+    "Hello {firstName}, thanks for asking about {job}.",
+  );
+  await expect(page.locator("#templatePreview")).toContainText("Alex");
+  await page.getByRole("button", { name: "Save template" }).click();
+  const custom = page
+    .locator(".template-card")
+    .filter({ hasText: "Pilot enquiry note" });
+  await expect(custom).toBeVisible();
+  await page
+    .locator("#defaultTemplate")
+    .selectOption({ label: "Pilot enquiry note · custom" });
+  await custom.getByRole("button", { name: "Preview" }).click();
+  await expect(page.getByRole("dialog")).toContainText("Hello Alex");
+  await page.getByRole("button", { name: "Close" }).last().click();
+  await custom.getByRole("button", { name: "Duplicate" }).click();
+  await expect(page.locator("#templateName")).toHaveValue(
+    "Pilot enquiry note copy",
+  );
+  await page.getByRole("button", { name: "Save template" }).click();
+  const copy = page
+    .locator(".template-card")
+    .filter({ hasText: "Pilot enquiry note copy" });
+  await copy.getByRole("button", { name: "Delete" }).click();
+  await page.getByRole("button", { name: "Delete template" }).click();
+  await expect(
+    page
+      .locator(".template-card")
+      .filter({ hasText: "Pilot enquiry note copy" }),
+  ).toHaveCount(0);
+  await page
+    .getByRole("button", { name: "Restore built-in templates" })
+    .click();
+  await page.getByRole("button", { name: "Restore templates" }).click();
+  await expect(
+    page.locator(".template-card").filter({ hasText: "Pilot enquiry note" }),
+  ).toHaveCount(0);
+  await expect(page.locator("#defaultTemplate")).toHaveValue("tpl-initial");
+});
+
+test("application update waits for user action and preserves IndexedDB data", async ({
+  page,
+  context,
+}) => {
+  await addEnquiry(page, "Update Safe Customer", "Hedge trim");
+  let serveUpgrade = false;
+  await page.evaluate(async () => {
+    await caches.open("leadloop-uk-stale-test");
+    await caches.open("unrelated-product-cache");
+  });
+  await context.route("**/sw.js", async (route) => {
+    const response = await route.fetch();
+    let body = await response.text();
+    if (serveUpgrade) body = body.replaceAll("shell-v5", "shell-v6");
+    await route.fulfill({
+      status: response.status(),
+      headers: {
+        "content-type": "text/javascript; charset=utf-8",
+        "cache-control": "no-cache",
+      },
+      body,
+    });
+  });
+  serveUpgrade = true;
+  await page.evaluate(async () => {
+    await navigator.serviceWorker.register("./sw.js?pilot-update-check=1");
+  });
+  await expect(page.locator("#swUpdateBanner")).toBeVisible({ timeout: 15000 });
+  const waitingState = await page.evaluate(async () => {
+    const registration = await navigator.serviceWorker.getRegistration();
+    return {
+      waiting: Boolean(registration?.waiting),
+      active: registration?.active?.state,
+    };
+  });
+  expect(waitingState).toEqual({ waiting: true, active: "activated" });
+  await page.locator("#applyUpdateBtn").click();
+  await page.locator('[data-nav="enquiries"]').first().click();
+  await expect(page.locator("[data-lead-card]")).toContainText(
+    "Update Safe Customer",
+    { timeout: 15000 },
+  );
+  const result = await page.evaluate(async () => {
+    const registration = await navigator.serviceWorker.ready;
+    const db = await new Promise((resolve, reject) => {
+      const request = indexedDB.open("leadloop-uk");
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const leads = await new Promise((resolve, reject) => {
+      const request = db.transaction("leads").objectStore("leads").getAll();
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    db.close();
+    return {
+      script: registration.active?.scriptURL,
+      leads: leads.map((x) => x.name),
+      caches: await caches.keys(),
+    };
+  });
+  expect(result.script).toContain("sw.js");
+  expect(result.leads).toContain("Update Safe Customer");
+  expect(result.caches).toContain("unrelated-product-cache");
+  expect(result.caches).toContain("leadloop-uk-shell-v6");
+  expect(result.caches).not.toContain("leadloop-uk-stale-test");
+});
+
+test("application startup has no uncaught browser errors or failed same-origin requests", async ({
+  page,
+}) => {
+  const pageErrors = [];
+  const consoleErrors = [];
+  const failedRequests = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") consoleErrors.push(message.text());
+  });
+  page.on("requestfailed", (request) => {
+    if (new URL(request.url()).origin === new URL(page.url()).origin)
+      failedRequests.push(`${request.url()}: ${request.failure()?.errorText}`);
+  });
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
+  expect(pageErrors).toEqual([]);
+  expect(consoleErrors).toEqual([]);
+  expect(failedRequests).toEqual([]);
+});
+
+test("local-day rollover refreshes follow-up badges without a reload", async ({
+  page,
+}) => {
+  await page.clock.install({ time: new Date("2026-06-01T23:59:50") });
+  await page.reload();
+  await page.getByRole("button", { name: "+ Add enquiry" }).first().click();
+  await page.locator("#leadName").fill("Midnight Customer");
+  await page.locator("#leadJob").fill("Window clean");
+  await page.locator("#leadFollow").fill("2026-06-02");
+  await page.getByRole("button", { name: "Save enquiry" }).click();
+  await expect(page.locator("#navDueCount")).toBeHidden();
+  await page.clock.fastForward(11000);
+  await expect(page.locator("#navDueCount")).toBeVisible();
+  await expect(page.locator("#navDueCount")).toHaveText("1");
+});
+
+test("separate tabs refresh committed records without relying on server sync", async ({
+  page,
+  context,
+}) => {
+  const secondTab = await context.newPage();
+  await secondTab.goto("/");
+  await expect(secondTab.locator("html")).toHaveAttribute(
+    "data-app-ready",
+    "true",
+  );
+  await page.getByRole("button", { name: "+ Add enquiry" }).first().click();
+  await page.locator("#leadName").fill("Shared Tab Customer");
+  await page.locator("#leadJob").fill("Gutter clean");
+  await page.getByRole("button", { name: "Save enquiry" }).click();
+  await secondTab.locator('[data-nav="enquiries"]').first().click();
+  await expect(secondTab.locator("[data-lead-card]")).toContainText(
+    "Shared Tab Customer",
+  );
+  await secondTab.close();
+});
+
+test("PWA install prompt is user-triggered and installed state updates visibly", async ({
+  page,
+}) => {
+  await page.evaluate(() => {
+    const event = new Event("beforeinstallprompt", { cancelable: true });
+    event.prompt = async () => {};
+    event.userChoice = Promise.resolve({ outcome: "accepted" });
+    window.dispatchEvent(event);
+  });
+  await expect(page.locator("#installBtn")).toBeVisible();
+  await page.locator("#installBtn").click();
+  await expect(page.locator("#toastRegion")).toContainText(
+    "Installation accepted",
+  );
+  await page.evaluate(() => {
+    window.matchMedia = (query) => ({
+      matches: query === "(display-mode: standalone)",
+    });
+    window.dispatchEvent(new Event("appinstalled"));
+  });
+  await expect(page.locator("#installBtn")).toBeHidden();
+  await page.locator('[data-nav="settings"]').first().click();
+  await expect(page.locator("#pwaStatusDetail")).toContainText(
+    "Installed on this device",
+  );
+});
+
+test("possible customer duplicates are flagged without automatically merging records", async ({
+  page,
+}) => {
+  await addEnquiry(page, "Duplicate Check", "Window clean");
+  await page.getByRole("button", { name: "+ Add enquiry" }).first().click();
+  await page.locator("#leadName").fill("Duplicate Check");
+  await page.locator("#leadJob").fill("Gutter clean");
+  await page.locator("#leadPhone").fill("07123 456789");
+  await page.locator("#leadEmail").fill("test@example.com");
+  await expect(page.locator("#duplicateWarning")).toContainText(
+    "Possible matching customer",
+  );
+  await page.getByRole("button", { name: "Save enquiry" }).click();
+  await page.getByRole("button", { name: "Save separate record" }).click();
+  await expect(page.locator("[data-lead-card]")).toHaveCount(1);
+  await page.locator('[data-nav="customers"]').first().click();
+  await expect(
+    page.getByText("Possible matching customer", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("LeadLoop does not merge customer records"),
+  ).toBeVisible();
 });

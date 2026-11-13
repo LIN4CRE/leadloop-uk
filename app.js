@@ -12,6 +12,7 @@ import {
   findPotentialDuplicates,
   renderMessageTemplate,
   getAllTemplates,
+  TRADE_CATEGORIES,
   localDateString,
   addDays,
   validDate,
@@ -29,17 +30,22 @@ import {
 import {
   openDatabase,
   loadAllState,
-  putInStore,
-  runTransaction,
+  putInStore as persistRecord,
+  runTransaction as transact,
   createBackupPayload,
   restoreBackupToDB,
   eraseAllDataInDB,
 } from "./src/db.js";
 import { renderQuotationDocumentHtml } from "./src/print.js";
+import {
+  TEMPLATE_CATEGORIES,
+  TEMPLATE_VARIABLES,
+  validateMessageTemplate,
+} from "./src/templates.js";
 const $ = (s, r = document) => r.querySelector(s),
   $$ = (s, r = document) => [...r.querySelectorAll(s)],
-  today = localDateString(),
   now = () => new Date().toISOString();
+let today = localDateString();
 const state = {
   db: null,
   customers: [],
@@ -50,14 +56,42 @@ const state = {
   settings: { ...DEFAULT_SETTINGS },
   settingsRows: [],
   quarantine: [],
+  integrityIssues: [],
   view: "dashboard",
   search: "",
+  quoteSearch: "",
   stageFilter: "",
   dateRange: "all",
   selectedCustomerId: "",
   waitingWorker: null,
   deferredInstall: null,
 };
+const tabId = createId("tab");
+const changeChannel =
+  typeof BroadcastChannel === "function"
+    ? new BroadcastChannel("leadloop-uk-database-changes")
+    : null;
+if (changeChannel)
+  changeChannel.onmessage = (event) => {
+    if (event.data?.sender !== tabId && state.db)
+      void refresh().catch((error) =>
+        toast(
+          `Could not refresh records from another tab: ${error.message}`,
+          true,
+        ),
+      );
+  };
+async function putInStore(db, storeName, record) {
+  const result = await persistRecord(db, storeName, record);
+  changeChannel?.postMessage({ sender: tabId, storeName });
+  return result;
+}
+async function runTransaction(db, storeNames, mode, callback) {
+  const result = await transact(db, storeNames, mode, callback);
+  if (mode === "readwrite")
+    changeChannel?.postMessage({ sender: tabId, storeNames });
+  return result;
+}
 const PAGE = {
   dashboard: [
     "Dashboard",
@@ -124,6 +158,12 @@ function modal(title, body, actions = [], narrow = false) {
 function confirmUser(title, text, label = "Confirm", danger = false) {
   return new Promise((resolve) => {
     const d = $("#confirmModal");
+    let settled = false;
+    const settle = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
     $("#confirmTitle").textContent = title;
     $("#confirmBody").textContent = text;
     const f = $("#confirmFoot");
@@ -138,17 +178,62 @@ function confirmUser(title, text, label = "Confirm", danger = false) {
       b.textContent = name;
       b.onclick = () => {
         d.close();
-        resolve(ok);
+        settle(ok);
       };
       f.append(b);
     }
-    d.oncancel = () => resolve(false);
+    d.oncancel = () => settle(false);
+    d.onclose = () => settle(false);
     d.showModal();
   });
+}
+function auditReferences(data) {
+  const customers = new Set(data.customers.map((x) => x.id));
+  const leads = new Map(data.leads.map((x) => [x.id, x]));
+  const issues = [];
+  for (const lead of data.leads)
+    if (!customers.has(lead.customerId))
+      issues.push(`Enquiry ${lead.id} refers to a missing customer.`);
+  for (const quote of data.quotes) {
+    const lead = leads.get(quote.leadId);
+    if (
+      !lead ||
+      !customers.has(quote.customerId) ||
+      lead.customerId !== quote.customerId
+    )
+      issues.push(
+        `Quotation ${quote.reference || quote.id} has a missing or mismatched enquiry/customer link.`,
+      );
+  }
+  for (const visit of data.visits) {
+    const lead = leads.get(visit.leadId);
+    if (
+      !lead ||
+      (visit.customerId &&
+        (!customers.has(visit.customerId) ||
+          lead.customerId !== visit.customerId))
+    )
+      issues.push(
+        `Visit ${visit.id} has a missing or mismatched enquiry/customer link.`,
+      );
+  }
+  for (const activity of data.activities) {
+    const lead = activity.leadId ? leads.get(activity.leadId) : null;
+    if (
+      (activity.leadId && !lead) ||
+      (activity.customerId && !customers.has(activity.customerId)) ||
+      (lead && activity.customerId && lead.customerId !== activity.customerId)
+    )
+      issues.push(
+        `Activity ${activity.id} has a missing or mismatched enquiry/customer link.`,
+      );
+  }
+  return issues;
 }
 async function refresh() {
   const d = await loadAllState(state.db);
   Object.assign(state, d);
+  state.integrityIssues = auditReferences(d);
   state.settings = { ...DEFAULT_SETTINGS, ...d.settings };
   state.settingsRows = d.settingsRows;
   updateChrome();
@@ -163,11 +248,12 @@ function updateChrome() {
   }
   const needsReview =
     state.quarantine.length ||
+    state.integrityIssues.length ||
     Number(reportData.quarantinedCount) > 0 ||
     Number(reportData.renamedDuplicatesCount) > 0;
   $("#quarantineBanner").hidden = !needsReview;
   $("#quarantineBannerText").textContent =
-    `${state.quarantine.length} preserved record${state.quarantine.length === 1 ? "" : "s"} need manual review. Existing records were not discarded.`;
+    `${state.quarantine.length} preserved record${state.quarantine.length === 1 ? "" : "s"} and ${state.integrityIssues.length} relationship issue${state.integrityIssues.length === 1 ? "" : "s"} need review. Existing data remains stored.`;
   $("#offlineBanner").hidden = navigator.onLine;
   const m = calculateDashboard(state.leads, today, { visits: state.visits }),
     due = m.followUpsDue + m.repeatDue;
@@ -326,6 +412,10 @@ function customersView() {
   return `<div class="card toolbar"><div class="filters"><input type="search" id="customerSearch" value="${escAttr(state.search)}" placeholder="Search customers" aria-label="Search customers"></div><button class="btn primary" data-action="add-customer">+ Add customer</button></div><div class="customer-layout"><section class="card"><div class="card-header"><h2 class="card-title">Customers</h2><span>${rows.length}</span></div><div class="card-body" style="display:grid;gap:8px">${rows.length ? rows.map((c) => `<button class="customer-card-btn ${chosen?.id === c.id ? "selected" : ""}" data-action="select-customer" data-id="${escAttr(c.id)}"><strong>${esc(c.name)}</strong><span class="sub">${esc(c.phone || c.email || "No contact details")}</span><span class="sub">${state.leads.filter((l) => l.customerId === c.id).length} linked enquiries</span></button>`).join("") : `<div class="empty"><h3>No customers yet</h3><p>Customers are created from enquiries or added independently.</p></div>`}</div></section><section>${chosen ? customerProfile(chosen) : `<div class="card empty"><h2>Select a customer</h2><p>Choose a customer to review their history.</p></div>`}</section></div>`;
 }
 function customerProfile(c) {
+  const possibleMatches = findPotentialDuplicates(
+    state.customers.filter((x) => x.id !== c.id),
+    { name: c.name, phone: c.phone, email: c.email },
+  );
   const leads = state.leads
       .filter((l) => l.customerId === c.id)
       .sort((a, b) => b.created.localeCompare(a.created)),
@@ -342,18 +432,42 @@ function customerProfile(c) {
     acts = state.activities
       .filter((a) => a.customerId === c.id)
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .slice(0, 8);
-  return `<article class="card"><div class="card-header"><div><h2 class="card-title">${esc(c.name)}</h2><span class="sub">Customer profile</span></div><button class="btn sm" data-action="edit-customer" data-id="${escAttr(c.id)}">Edit details</button></div><div class="card-body"><div class="queue-list"><div><strong>Phone</strong><div class="sub">${esc(c.phone || "Not recorded")}</div></div><div><strong>Email</strong><div class="sub">${esc(c.email || "Not recorded")}</div></div><div><strong>Address</strong><div class="sub">${esc([c.address, c.postcode].filter(Boolean).join(", ") || "Not recorded")}</div></div><div><strong>Notes</strong><div class="sub">${esc(c.notes || "No notes")}</div></div><div><strong>Next scheduled service</strong><div class="sub">${next ? `${formatDisplayDate(next.nextRepeat)} · ${esc(next.job)}` : "No repeat date recorded"}</div></div></div><div class="detail-section"><div style="display:flex;justify-content:space-between;gap:8px"><h3>Enquiry &amp; job history (${leads.length})</h3><button class="btn sm" data-action="add-lead-customer" data-id="${escAttr(c.id)}">+ Enquiry</button></div>${leads.length ? `<div class="queue-list">${leads.map((l) => `<div class="queue-item"><div><strong>${esc(l.job)}</strong><div class="queue-item-sub">${esc(l.stage)} · ${formatDisplayDate(l.created)}${latestQuote(l) ? ` · ${esc(latestQuote(l).reference)} ${money(latestQuote(l).total)}` : ""}</div></div><button class="btn sm" data-action="open-lead" data-id="${escAttr(l.id)}">Open</button></div>`).join("")}` : `<p class="hint">No enquiries linked yet.</p>`}</div><div class="detail-section"><h3>Completed visits (${visits.length})</h3>${visits.length ? `<ul class="timeline">${visits.map((v) => `<li class="timeline-item"><strong>${esc(v.service || "Service visit")}</strong> · completed ${formatDisplayDate(v.completedDate)}${v.amountPaid != null ? ` · payment recorded ${money(v.amountPaid)}` : ""}<div class="timeline-time">Next reminder: ${formatDisplayDate(v.nextScheduledDate)}</div></li>`).join("")}</ul>` : `<p class="hint">Completed visits will appear here.</p>`}</div><div class="detail-section"><h3>Recent activity</h3>${acts.length ? `<ul class="timeline">${acts.map((a) => `<li class="timeline-item">${esc(a.summary)}<div class="timeline-time">${formatDateTime(a.createdAt)}</div></li>`).join("")}</ul>` : `<p class="hint">Activity history will appear here.</p>`}</div></div></article>`;
+      .slice(0, 8),
+    customerQuotes = state.quotes
+      .filter((q) => leads.some((lead) => lead.id === q.leadId))
+      .sort(
+        (a, b) =>
+          String(b.date).localeCompare(String(a.date)) ||
+          (b.version || 1) - (a.version || 1),
+      );
+  const quoteHistory = `<div class="detail-section"><h3>Quotation history (${customerQuotes.length})</h3>${customerQuotes.length ? `<div class="queue-list">${customerQuotes.map((q) => `<div class="queue-item"><div><strong>${esc(q.reference)}</strong><div class="queue-item-sub">${formatDisplayDate(q.date)} · Revision ${q.version || 1} · ${esc(q.status || "Draft")} · ${money(q.total)}</div></div><button class="btn sm" data-action="print-quote" data-id="${escAttr(q.id)}">Print / PDF</button></div>`).join("")}</div>` : `<p class="hint">No quotations have been created for this customer.</p>`}</div>`;
+  return `<article class="card"><div class="card-header"><div><h2 class="card-title">${esc(c.name)}</h2><span class="sub">Customer profile</span></div><button class="btn sm" data-action="edit-customer" data-id="${escAttr(c.id)}">Edit details</button></div><div class="card-body">${possibleMatches.length ? `<div class="dup-warning"><strong>Possible matching customer</strong><p>Review manually; LeadLoop does not merge customer records.</p>${possibleMatches.map((match) => `<button class="btn sm" data-action="select-customer" data-id="${escAttr(match.id)}">Review ${esc(match.name)}</button>`).join(" ")}</div>` : ""}<div class="queue-list"><div><strong>Phone</strong><div class="sub">${esc(c.phone || "Not recorded")}</div></div><div><strong>Email</strong><div class="sub">${esc(c.email || "Not recorded")}</div></div><div><strong>Address</strong><div class="sub">${esc([c.address, c.postcode].filter(Boolean).join(", ") || "Not recorded")}</div></div><div><strong>Notes</strong><div class="sub">${esc(c.notes || "No notes")}</div></div><div><strong>Next scheduled service</strong><div class="sub">${next ? `${formatDisplayDate(next.nextRepeat)} · ${esc(next.job)}` : "No repeat date recorded"}</div></div></div><div class="detail-section"><div style="display:flex;justify-content:space-between;gap:8px"><h3>Enquiry &amp; job history (${leads.length})</h3><button class="btn sm" data-action="add-lead-customer" data-id="${escAttr(c.id)}">+ Enquiry</button></div>${leads.length ? `<div class="queue-list">${leads.map((l) => `<div class="queue-item"><div><strong>${esc(l.job)}</strong><div class="queue-item-sub">${esc(l.stage)} · ${formatDisplayDate(l.created)}${latestQuote(l) ? ` · ${esc(latestQuote(l).reference)} ${money(latestQuote(l).total)}` : ""}</div></div><button class="btn sm" data-action="open-lead" data-id="${escAttr(l.id)}">Open</button></div>`).join("")}` : `<p class="hint">No enquiries linked yet.</p>`}</div>${quoteHistory}<div class="detail-section"><h3>Completed visits (${visits.length})</h3>${visits.length ? `<ul class="timeline">${visits.map((v) => `<li class="timeline-item"><strong>${esc(v.service || "Service visit")}</strong> · completed ${formatDisplayDate(v.completedDate)}${v.amountPaid != null ? ` · payment recorded ${money(v.amountPaid)}` : ""}<div class="timeline-time">Next reminder: ${formatDisplayDate(v.nextScheduledDate)}</div></li>`).join("")}</ul>` : `<p class="hint">Completed visits will appear here.</p>`}</div><div class="detail-section"><h3>Recent activity</h3>${acts.length ? `<ul class="timeline">${acts.map((a) => `<li class="timeline-item">${esc(a.summary)}<div class="timeline-time">${formatDateTime(a.createdAt)}</div></li>`).join("")}</ul>` : `<p class="hint">Activity history will appear here.</p>`}</div></div></article>`;
 }
 function quotesView() {
+  const query = state.quoteSearch.trim().toLowerCase();
   const rows = state.quotes
+    .filter((q) => {
+      if (!query) return true;
+      const lead = byId(state.leads, q.leadId);
+      return [
+        q.reference,
+        q.customerSnapshot?.name,
+        q.jobSummary,
+        lead?.name,
+        lead?.job,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase()
+        .includes(query);
+    })
     .slice()
     .sort((a, b) =>
       String(b.updatedAt || b.date).localeCompare(
         String(a.updatedAt || a.date),
       ),
     );
-  return `<div class="card toolbar"><div class="filters"><input type="search" id="quoteSearch" placeholder="Search reference, customer or service" aria-label="Search quotations"></div><span class="result-count">${rows.length} saved revisions</span><button class="btn primary" data-action="choose-quote-lead">+ Create quotation</button></div>${
+  return `<div class="card toolbar"><div class="filters"><input type="search" id="quoteSearch" value="${escAttr(state.quoteSearch)}" placeholder="Search reference, customer or service" aria-label="Search quotations"></div><span class="result-count">${rows.length} saved revisions</span><button class="btn primary" data-action="choose-quote-lead">+ Create quotation</button></div>${
     rows.length
       ? `<div class="card"><div class="table-wrap"><table class="data-table"><thead><tr><th>Reference</th><th>Customer</th><th>Service</th><th>Date</th><th class="num">Total</th><th>Status</th><th>Actions</th></tr></thead><tbody>${rows
           .map((q) => {
@@ -398,19 +512,221 @@ function followupsView() {
     )
   );
 }
+function showOnboarding() {
+  const body = `<p>LeadLoop helps independent service businesses keep customer enquiries, quotations and repeat visits together on this device.</p><div id="onboardingError" class="form-error" role="alert" hidden></div><div class="form-grid"><div class="field full"><label for="onboardBusiness">Business name</label><input id="onboardBusiness" maxlength="120" value="${escAttr(state.settings.business)}" autocomplete="organization"></div><div class="field"><label for="onboardType">Business type</label><select id="onboardType">${TRADE_CATEGORIES.map((x) => `<option ${x === state.settings.businessType ? "selected" : ""}>${esc(x)}</option>`).join("")}</select></div><div class="field"><label for="onboardContact">Contact name (optional)</label><input id="onboardContact" value="${escAttr(state.settings.ownerName)}" autocomplete="name"></div><div class="field"><label for="onboardPhone">Business phone (optional)</label><input id="onboardPhone" type="tel" value="${escAttr(state.settings.phone)}" autocomplete="tel"></div><div class="field"><label for="onboardEmail">Business email (optional)</label><input id="onboardEmail" type="email" value="${escAttr(state.settings.email)}" autocomplete="email"></div></div><div class="privacy-callout"><strong>Your records stay in this browser profile on this device.</strong><p>There is no cloud sync, app-level encryption or automatic backup. Download backups regularly and store files containing customer information securely. You can dismiss setup and start later.</p></div>`;
+  modal("Welcome to LeadLoop", body, [
+    {
+      label: "Not now",
+      run: async () => {
+        await saveSettings({ ...state.settings, onboardingCompleted: "true" });
+        closeModal();
+        await refresh();
+      },
+    },
+    { label: "Save and add customer", run: () => finishOnboarding("customer") },
+    {
+      label: "Save and add first enquiry",
+      primary: true,
+      run: () => finishOnboarding("enquiry"),
+    },
+  ]);
+}
+async function finishOnboarding(next) {
+  const email = normalizeEmail($("#onboardEmail").value);
+  const phone = $("#onboardPhone").value.trim();
+  if (email && !/^\S+@\S+\.\S+$/.test(email)) {
+    $("#onboardingError").textContent =
+      "Enter a valid business email or leave it blank.";
+    $("#onboardingError").hidden = false;
+    return;
+  }
+  if (phone && !normalizeUKPhone(phone)) {
+    $("#onboardingError").textContent =
+      "Enter a valid UK business phone or leave it blank.";
+    $("#onboardingError").hidden = false;
+    return;
+  }
+  try {
+    await saveSettings({
+      ...state.settings,
+      business: $("#onboardBusiness").value.trim(),
+      businessType: $("#onboardType").value,
+      ownerName: $("#onboardContact").value.trim(),
+      phone,
+      email,
+      onboardingCompleted: "true",
+    });
+    closeModal();
+    await refresh();
+    if (next === "customer") openCustomerForm();
+    else openLeadForm();
+  } catch (error) {
+    $("#onboardingError").textContent = error.message;
+    $("#onboardingError").hidden = false;
+  }
+}
+
 function settingsView() {
-  const s = state.settings,
-    field = (label, key, type = "text", hint = "") =>
-      `<div class="field"><label for="${key}">${label}</label><input id="${key}" name="${key}" type="${type}" value="${escAttr(s[key] || "")}" ${type === "number" ? 'min="0" step="0.01"' : ""}>${hint ? `<span class="hint">${hint}</span>` : ""}</div>`;
-  return `<div class="settings-stack"><section class="card"><div class="card-header"><h2 class="card-title">Business details</h2></div><form id="settingsForm" class="card-body"><div class="form-grid">${field("Business or trading name", "business")}${field("Contact name", "ownerName")}${field("Business phone", "phone", "tel")}${field("Business email", "email", "email")}${field("Business address", "address")}${field("Postcode", "postcode")}${field("VAT number (optional)", "vatNumber")}${field("VAT calculation rate (%)", "defaultVat", "number", "Calculation setting only; not VAT advice")}${field("Quotation validity (days)", "defaultValidityDays", "number")}<div class="field full"><label for="defaultTerms">Default quotation terms</label><textarea id="defaultTerms" name="defaultTerms">${esc(s.defaultTerms)}</textarea></div></div><button class="btn primary" style="margin-top:14px">Save business details</button></form></section><section class="card"><div class="card-header"><h2 class="card-title">Message templates</h2><span class="sub">Drafts only; never sent by LeadLoop</span></div><div class="card-body"><label for="customTemplates">Custom templates (JSON array)</label><textarea id="customTemplates" style="min-height:150px;font-family:monospace">${esc(s.customTemplates || "[]")}</textarea><p class="hint">Each template needs name, subject and body. Placeholders: {firstName}, {name}, {job}, {business}, {quoteRef}, {quoteTotal}, {nextRepeat}.</p><button class="btn primary" id="saveTemplatesBtn">Save templates</button><div class="detail-section"><h3>Available templates</h3><ul>${getAllTemplates(
-    s,
-  )
-    .map((t) => `<li><strong>${esc(t.name)}</strong> — ${esc(t.subject)}</li>`)
-    .join(
-      "",
-    )}</ul></div></div></section><section class="card"><div class="card-header"><h2 class="card-title">Your data</h2></div><div class="card-body"><p>Customer and business records are stored in this browser's IndexedDB on this device. There is no cloud sync or automatic messaging. Browser storage is not encrypted by this application. Other people with access to this browser profile may access these records.</p><p class="hint">Export a JSON backup regularly and store it securely. Backups contain personal data. Restoring replaces local LeadLoop records.</p><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" data-action="backup">Download JSON backup</button><button class="btn" data-action="restore">Restore JSON backup</button><button class="btn" data-action="csv">Export enquiries CSV</button><button class="btn" data-action="customers-csv">Export customers CSV</button></div><div class="detail-section"><h3>Data recovery report</h3>${s.migrationReport ? `<pre style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(s.migrationReport)}</pre>` : `<p class="hint">No migration report recorded.</p>`}${state.quarantine.length ? `<button class="btn" data-action="quarantine">Review ${state.quarantine.length} preserved records</button>` : ""}</div></div></section><section class="card danger-zone"><div class="card-header"><h2 class="card-title">Erase all local data</h2></div><div class="card-body"><p>This permanently removes all customers, enquiries, quotations, visits, activity, settings and recovery records on this browser. Download a backup first if needed.</p><button class="btn danger" data-action="erase">Erase all local data…</button></div></section><section class="card"><div class="card-header"><h2 class="card-title">Install &amp; updates</h2></div><div class="card-body"><p>Use Install App when supported, or the browser menu's Install app / Add to Home Screen option. Availability varies. Updates preserve local records.</p><button class="btn" data-action="install-guide">Installation guide</button></div></section><section class="card"><div class="card-header"><h2 class="card-title">Privacy &amp; limitations</h2></div><div class="card-body"><p>LeadLoop is a local-first pilot, not hosted SaaS. It has no authentication, roles, device sync, app-level encryption, accounting, tax determination, automated backups or background notifications. This product does not itself establish legal compliance; businesses remain responsible for their data handling and applicable obligations.</p><p class="hint">Multi-device SaaS requires a secured backend, authentication, tenant isolation, transport/storage protections, retention and incident processes, support, tested backups, privacy review and genuine billing integration.</p></div></section></div>`;
+  const s = state.settings;
+  const field = (label, key, type = "text", hint = "") =>
+    `<div class="field"><label for="${key}">${label}</label><input id="${key}" name="${key}" type="${type}" value="${escAttr(s[key] || "")}" ${type === "number" ? 'min="0" step="0.01"' : ""}>${hint ? `<span class="hint">${hint}</span>` : ""}</div>`;
+  const templates = getAllTemplates(s);
+  const templateManager = `<section class="card"><div class="card-header"><h2 class="card-title">Message templates</h2><span class="sub">Personalised drafts only — never sent automatically</span></div><div class="card-body"><p class="hint">Choose a template when preparing a WhatsApp or email draft. Variables are replaced using the selected enquiry and your business details.</p><div class="field"><label for="defaultTemplate">Default template</label><select id="defaultTemplate">${templates.map((t) => `<option value="${escAttr(t.id)}" ${s.defaultTemplateId === t.id ? "selected" : ""}>${esc(t.name)}${t.custom ? " · custom" : " · built in"}</option>`).join("")}</select></div><div class="template-actions"><button class="btn primary" data-action="template-new">Create template</button><button class="btn" data-action="template-reset">Restore built-in templates</button></div><div class="template-list">${templates.map((t) => `<article class="template-card"><div><strong>${esc(t.name)}</strong><span class="sub">${esc(TEMPLATE_CATEGORIES.find((x) => x.id === t.category)?.label || "Custom")}${t.custom ? " · editable" : " · built in"}</span><p>${esc(t.body.slice(0, 170))}${t.body.length > 170 ? "…" : ""}</p></div><div class="template-actions"><button class="btn sm" data-action="template-preview" data-id="${escAttr(t.id)}">Preview</button><button class="btn sm" data-action="template-edit" data-id="${escAttr(t.id)}">Edit</button><button class="btn sm" data-action="template-duplicate" data-id="${escAttr(t.id)}">Duplicate</button>${t.custom ? `<button class="btn sm danger" data-action="template-delete" data-id="${escAttr(t.id)}">Delete</button>` : ""}</div></article>`).join("")}</div></div></section>`;
+  return `<div class="settings-stack"><section class="card"><div class="card-header"><h2 class="card-title">Business details</h2></div><form id="settingsForm" class="card-body"><div class="form-grid"><div class="field"><label for="business">Business or trading name</label><input id="business" name="business" value="${escAttr(s.business)}"></div><div class="field"><label for="businessType">Business type</label><select id="businessType" name="businessType">${TRADE_CATEGORIES.map((x) => `<option ${x === s.businessType ? "selected" : ""}>${esc(x)}</option>`).join("")}</select></div>${field("Contact name", "ownerName")}${field("Business phone", "phone", "tel")}${field("Business email", "email", "email")}${field("Business address", "address")}${field("Postcode", "postcode")}${field("VAT number (optional)", "vatNumber")}${field("VAT calculation rate (%)", "defaultVat", "number", "Calculation setting only; not VAT advice")}${field("Quotation validity (days)", "defaultValidityDays", "number")}<div class="field full"><label for="defaultTerms">Default quotation terms</label><textarea id="defaultTerms" name="defaultTerms">${esc(s.defaultTerms)}</textarea></div></div><button class="btn primary" style="margin-top:14px">Save business details</button></form></section>${templateManager}<section class="card"><div class="card-header"><h2 class="card-title">Your data</h2></div><div class="card-body"><p>Data remains in this browser profile on this device. There is no cloud synchronisation, application-level encryption or automatic remote backup. Browser access controls apply. Backups and CSV exports contain personal information; store them securely.</p><p class="hint">Restore validates the selected backup before replacing LeadLoop records. Keep a separate backup before restoring.</p><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" data-action="backup">Download JSON backup</button><button class="btn" data-action="restore">Restore JSON backup</button><button class="btn" data-action="csv">Export enquiries CSV</button><button class="btn" data-action="customers-csv">Export customers CSV</button></div><div class="detail-section"><h3>Data recovery report</h3>${s.migrationReport ? `<pre style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(s.migrationReport)}</pre>` : `<p class="hint">No migration report recorded.</p>`}${state.quarantine.length ? `<button class="btn" data-action="quarantine">Review ${state.quarantine.length} preserved records</button>` : ""}${state.integrityIssues.length ? `<details class="integrity-review"><summary>Review ${state.integrityIssues.length} data relationship issue${state.integrityIssues.length === 1 ? "" : "s"}</summary><p class="hint">These records have not been deleted. Download a backup and resolve links by editing the affected record before relying on a restore.</p><ul>${state.integrityIssues.map((issue) => `<li>${esc(issue)}</li>`).join("")}</ul></details>` : `<p class="hint">No missing or mismatched record links detected.</p>`}</div></div></section><section class="card danger-zone"><div class="card-header"><h2 class="card-title">Erase all local data</h2></div><div class="card-body"><p>This permanently removes all customers, enquiries, quotations, visits, activity, settings and recovery records on this browser. Download a backup first if needed.</p><button class="btn danger" data-action="erase">Erase all local data…</button></div></section><section class="card"><div class="card-header"><h2 class="card-title">Install &amp; updates</h2></div><div class="card-body"><p>Installation stores no synced copy. Updates preserve local records. For an update prompt, review the change before applying it.</p><p id="pwaStatusDetail" class="hint">${matchMedia("(display-mode: standalone)").matches || navigator.standalone ? "Installed on this device" : "Running in a browser"}</p><button class="btn" data-action="install-guide">Installation guide</button><button class="btn" data-action="onboarding">Getting started</button></div></section><section class="card"><div class="card-header"><h2 class="card-title">Privacy &amp; future plans</h2></div><div class="card-body"><p>Local records are not encrypted by this app. Other people with access to this browser profile may be able to access them. Businesses remain responsible for choosing what data to collect, how long to retain it and how to handle customer requests.</p><p class="hint">A future hosted service would need authentication, account recovery, tenant isolation, secure backups, privacy/security review, support, operational monitoring and genuine subscription handling. These are not simulated in this pilot.</p></div></section></div>`;
+}
+
+function openTemplateEditor(template = null) {
+  const t = template || {
+    id: "",
+    category: "initial",
+    name: "",
+    subject: "",
+    body: "",
+  };
+  const categoryOptions = TEMPLATE_CATEGORIES.map(
+    (c) =>
+      `<option value="${c.id}" ${t.category === c.id ? "selected" : ""}>${esc(c.label)}</option>`,
+  ).join("");
+  const variableButtons = TEMPLATE_VARIABLES.map(
+    ([key, desc]) =>
+      `<button type="button" class="btn sm" title="${escAttr(desc)}" data-insert-variable="${escAttr(key)}">${esc(key)}</button>`,
+  ).join("");
+  const body = `<div id="templateError" class="form-error" role="alert" hidden></div><div class="form-grid"><div class="field"><label for="templateName">Template name *</label><input id="templateName" maxlength="80" value="${escAttr(t.name)}" required></div><div class="field"><label for="templateCategory">Use for</label><select id="templateCategory">${categoryOptions}</select></div><div class="field full"><label for="templateSubject">Email subject</label><input id="templateSubject" maxlength="140" value="${escAttr(t.subject)}"></div><div class="field full"><label for="templateBody">Message content *</label><textarea id="templateBody" maxlength="2000" rows="7">${esc(t.body)}</textarea><div class="template-actions" aria-label="Insert a customer variable">${variableButtons}</div><span class="hint">Choose a variable to insert it at the cursor. Unknown variable names remain as typed.</span></div><div class="field full"><label for="templatePreview">Personalised preview (sample only)</label><div id="templatePreview" class="template-preview" aria-live="polite"></div></div></div>`;
+  modal(
+    template ? `Edit template — ${template.name}` : "Create message template",
+    body,
+    [
+      { label: "Cancel", run: closeModal },
+      {
+        label: "Save template",
+        primary: true,
+        run: async () => {
+          const err = $("#templateError");
+          try {
+            const saved = validateMessageTemplate({
+              id: t.id || createId("tpl"),
+              category: $("#templateCategory").value,
+              name: $("#templateName").value,
+              subject: $("#templateSubject").value,
+              body: $("#templateBody").value,
+            });
+            const all = JSON.parse(state.settings.customTemplates || "[]");
+            const next = Array.isArray(all)
+              ? all.filter((x) => x.id !== saved.id)
+              : [];
+            next.push(saved);
+            await saveSettings({
+              ...state.settings,
+              customTemplates: JSON.stringify(next),
+            });
+            closeModal();
+            await refresh();
+            toast("Template saved.");
+          } catch (error) {
+            err.textContent = error.message || "Template could not be saved.";
+            err.hidden = false;
+          }
+        },
+      },
+    ],
+  );
+  const updatePreview = () => {
+    const sample = {
+      name: "Alex Taylor",
+      job: "regular garden tidy",
+      nextRepeat: addDays(today, 14),
+      email: "alex@example.com",
+      quote: {
+        reference: "LL-SAMPLE-01",
+        items: [{ description: "Example work", qty: 1, price: 85 }],
+        discount: 0,
+        vat: 0,
+      },
+    };
+    $("#templatePreview").textContent =
+      `${renderMessageTemplate($("#templateSubject").value, sample, state.settings)}\n\n${renderMessageTemplate($("#templateBody").value, sample, state.settings)}`;
+  };
+  $("#templateBody").addEventListener("input", updatePreview);
+  $("#templateSubject").addEventListener("input", updatePreview);
+  $("#modalBody").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-insert-variable]");
+    if (!button) return;
+    const area = $("#templateBody"),
+      start = area.selectionStart,
+      end = area.selectionEnd;
+    area.setRangeText(button.dataset.insertVariable, start, end, "end");
+    area.focus();
+    updatePreview();
+  });
+  updatePreview();
+}
+
+function openTemplatePreview(template) {
+  if (!template) return;
+  const sample = {
+    name: "Alex Taylor",
+    job: "regular garden tidy",
+    nextRepeat: addDays(today, 14),
+    email: "alex@example.com",
+    quote: {
+      reference: "LL-SAMPLE-01",
+      items: [{ description: "Example work", qty: 1, price: 85 }],
+      discount: 0,
+      vat: 0,
+    },
+  };
+  modal(
+    `Preview — ${template.name}`,
+    `<p class="hint">Example only. No customer message is sent.</p><div class="template-preview"><strong>${esc(renderMessageTemplate(template.subject, sample, state.settings))}</strong><p>${esc(renderMessageTemplate(template.body, sample, state.settings))}</p></div>`,
+    [{ label: "Close", primary: true, run: closeModal }],
+    true,
+  );
+}
+
+async function templateAction(action, id) {
+  const templates = getAllTemplates(state.settings),
+    template = templates.find((x) => x.id === id);
+  if (action === "template-new") return openTemplateEditor();
+  if (!template) return;
+  if (action === "template-edit") return openTemplateEditor(template);
+  if (action === "template-preview") return openTemplatePreview(template);
+  if (action === "template-duplicate")
+    return openTemplateEditor({
+      ...template,
+      id: "",
+      name: `${template.name} copy`,
+    });
+  if (action === "template-delete") {
+    closeModal();
+    if (
+      !(await confirmUser(
+        "Delete this template?",
+        `Delete “${template.name}”? This cannot be undone.`,
+        "Delete template",
+        true,
+      ))
+    )
+      return;
+    const custom = JSON.parse(state.settings.customTemplates || "[]");
+    await saveSettings({
+      ...state.settings,
+      customTemplates: JSON.stringify(custom.filter((x) => x.id !== id)),
+      ...(state.settings.defaultTemplateId === id
+        ? { defaultTemplateId: "tpl-initial" }
+        : {}),
+    });
+    await refresh();
+    toast("Template deleted.");
+  }
 }
 function bindView() {
+  const quoteSearch = $("#quoteSearch");
+  if (quoteSearch)
+    quoteSearch.oninput = () => {
+      state.quoteSearch = quoteSearch.value;
+      render();
+      $("#quoteSearch")?.focus();
+    };
   const q = $("#leadSearch");
   if (q)
     q.oninput = () => {
@@ -457,29 +773,15 @@ function bindView() {
         toast(x.message, true);
       }
     };
-  const t = $("#saveTemplatesBtn");
-  if (t)
-    t.onclick = async () => {
-      try {
-        const raw = $("#customTemplates").value,
-          p = JSON.parse(raw || "[]");
-        if (
-          !Array.isArray(p) ||
-          p.some(
-            (x) =>
-              !x || typeof x.name !== "string" || typeof x.body !== "string",
-          )
-        )
-          throw Error("Templates need a JSON array with name and body.");
-        await saveSettings({
-          ...state.settings,
-          customTemplates: JSON.stringify(p),
-        });
-        await refresh();
-        toast("Templates saved.");
-      } catch (e) {
-        toast(e.message, true);
-      }
+  const defaultTemplate = $("#defaultTemplate");
+  if (defaultTemplate)
+    defaultTemplate.onchange = async () => {
+      await saveSettings({
+        ...state.settings,
+        defaultTemplateId: defaultTemplate.value,
+      });
+      await refresh();
+      toast("Default message template updated.");
     };
 }
 function openLeadForm(existing = null, customerId = "") {
@@ -522,6 +824,11 @@ async function saveLead(existing, initialCustomerId) {
     linkedId = $("#leadLinkCustomer").value || initialCustomerId;
   if (!name || !job) {
     err.textContent = "Enter the customer name and service details.";
+    err.hidden = false;
+    return;
+  }
+  if (email && !/^\S+@\S+\.\S+$/.test(email)) {
+    err.textContent = "Enter a valid email address or leave it blank.";
     err.hidden = false;
     return;
   }
@@ -589,11 +896,11 @@ async function saveLead(existing, initialCustomerId) {
       followUpDate: $("#leadFollow").value,
       nextRepeat: $("#leadRepeat").value,
       repeatInterval: $("#leadInterval").value,
-      repeatAnchorDay:
-        existing?.repeatAnchorDay ||
-        ($("#leadRepeat").value
-          ? Number($("#leadRepeat").value.slice(-2))
-          : null),
+      repeatAnchorDay: $("#leadRepeat").value
+        ? existing?.nextRepeat === $("#leadRepeat").value
+          ? existing.repeatAnchorDay || Number($("#leadRepeat").value.slice(-2))
+          : Number($("#leadRepeat").value.slice(-2))
+        : null,
       repeatActive: true,
       paymentStatus: $("#leadPayment").value,
       paidAmount: Number($("#leadPaid").value || 0),
@@ -657,6 +964,11 @@ async function saveCustomer(c) {
     err.hidden = false;
     return;
   }
+  if (email && !/^\S+@\S+\.\S+$/.test(email)) {
+    err.textContent = "Enter a valid email address or leave it blank.";
+    err.hidden = false;
+    return;
+  }
   const normalized = phone ? normalizeUKPhone(phone) : null;
   if (phone && !normalized) {
     err.textContent = "Enter a valid UK phone number or leave blank.";
@@ -692,6 +1004,11 @@ async function saveCustomer(c) {
     };
   try {
     await putInStore(state.db, "customers", row);
+    await log({
+      customerId: row.id,
+      type: c ? "customer_updated" : "customer_created",
+      summary: c ? "Customer details updated" : "Customer record created",
+    });
     state.selectedCustomerId = row.id;
     closeModal();
     await refresh();
@@ -932,7 +1249,7 @@ async function setQuoteStatus(q) {
 
 function openFollowup(l) {
   const ts = getAllTemplates(state.settings);
-  const t = ts[0];
+  const t = ts.find((x) => x.id === state.settings.defaultTemplateId) || ts[0];
   const subject = renderMessageTemplate(
     t?.subject || "Following up",
     l,
@@ -943,7 +1260,7 @@ function openFollowup(l) {
     l,
     state.settings,
   );
-  const body = `<div id="messageError" class="form-error" hidden role="alert"></div><div class="form-grid"><div class="field"><label for="msgTemplate">Template</label><select id="msgTemplate">${ts.map((x) => `<option value="${escAttr(x.id)}">${esc(x.name)}</option>`).join("")}</select></div><div class="field"><label for="msgChannel">Open with</label><select id="msgChannel"><option value="whatsapp">WhatsApp</option><option value="email">Email</option></select></div><div class="field"><label for="msgDate">Follow-up date</label><input id="msgDate" type="date" value="${escAttr(l.followUpDate || "")}"></div><div class="field full"><label for="msgSubject">Email subject</label><input id="msgSubject" value="${escAttr(subject)}"></div><div class="field full"><label for="msgBody">Personalised message draft</label><textarea id="msgBody" style="min-height:150px">${esc(text)}</textarea></div></div><p class="hint">This prepares a draft and opens an external app only after your click. Nothing is sent automatically.</p>`;
+  const body = `<div id="messageError" class="form-error" hidden role="alert"></div><div class="form-grid"><div class="field"><label for="msgTemplate">Template</label><select id="msgTemplate">${ts.map((x) => `<option value="${escAttr(x.id)}" ${x.id === t?.id ? "selected" : ""}>${esc(x.name)}</option>`).join("")}</select></div><div class="field"><label for="msgChannel">Open with</label><select id="msgChannel"><option value="whatsapp">WhatsApp</option><option value="email">Email</option></select></div><div class="field"><label for="msgDate">Follow-up date</label><input id="msgDate" type="date" value="${escAttr(l.followUpDate || "")}"></div><div class="field full"><label for="msgSubject">Email subject</label><input id="msgSubject" value="${escAttr(subject)}"></div><div class="field full"><label for="msgBody">Personalised message draft</label><textarea id="msgBody" style="min-height:150px">${esc(text)}</textarea></div></div><p class="hint">This prepares a draft and opens an external app only after your click. Nothing is sent automatically.</p>`;
   modal(`Prepare follow-up — ${l.name}`, body, [
     { label: "Cancel", run: closeModal },
     { label: "Save draft only", run: () => saveMessage(l, null) },
@@ -1021,9 +1338,14 @@ function openMessage(l) {
     return;
   }
   let url;
-  if (channel === "email")
-    url = `mailto:${encodeURIComponent(l.email || "")}?subject=${encodeURIComponent($("#msgSubject").value)}&body=${encodeURIComponent(text)}`;
-  else {
+  if (channel === "email") {
+    if (!l.email) {
+      err.textContent = "An email address is needed to open an email draft.";
+      err.hidden = false;
+      return;
+    }
+    url = `mailto:${encodeURIComponent(l.email)}?subject=${encodeURIComponent($("#msgSubject").value)}&body=${encodeURIComponent(text)}`;
+  } else {
     const phone = normalizeUKPhone(l.phone);
     if (!phone) {
       err.textContent = "A valid UK telephone number is needed for WhatsApp.";
@@ -1188,6 +1510,7 @@ async function restore(file) {
       throw Error("Selected file is not valid JSON.");
     }
     await restoreBackupToDB(state.db, p);
+    changeChannel?.postMessage({ sender: tabId, storeNames: ["all"] });
     state.selectedCustomerId = "";
     await refresh();
     toast("Backup validated and restored.");
@@ -1213,6 +1536,7 @@ async function eraseData() {
   }
   try {
     await eraseAllDataInDB(state.db);
+    changeChannel?.postMessage({ sender: tabId, storeNames: ["all"] });
     state.selectedCustomerId = "";
     await refresh();
     toast("All local LeadLoop data erased.");
@@ -1361,6 +1685,33 @@ async function act(action, id = "", el = null) {
     case "install-guide":
       installGuide();
       break;
+    case "template-new":
+    case "template-edit":
+    case "template-preview":
+    case "template-duplicate":
+    case "template-delete":
+      await templateAction(action, id);
+      break;
+    case "template-reset":
+      if (
+        await confirmUser(
+          "Restore built-in templates?",
+          "This removes custom templates and restores the original four templates.",
+          "Restore templates",
+        )
+      ) {
+        await saveSettings({
+          ...state.settings,
+          customTemplates: "[]",
+          defaultTemplateId: "tpl-initial",
+        });
+        await refresh();
+        toast("Built-in templates restored.");
+      }
+      break;
+    case "onboarding":
+      showOnboarding();
+      break;
     default:
       break;
   }
@@ -1422,7 +1773,11 @@ $("#applyUpdateBtn").onclick = () => {
 };
 function setTheme(theme) {
   document.documentElement.dataset.theme = theme;
-  localStorage.setItem("leadloop-theme", theme);
+  try {
+    localStorage.setItem("leadloop-theme", theme);
+  } catch {
+    // Theme persistence is optional; local records use IndexedDB independently.
+  }
   $("#themeColorMeta").content = theme === "light" ? "#f3f6fa" : "#0b0f17";
   $("#themeBtn").textContent = theme === "light" ? "Dark theme" : "Light theme";
 }
@@ -1479,14 +1834,62 @@ async function serviceWorker() {
     console.warn("Service worker registration unavailable", e);
   }
 }
+let midnightTimer;
+function scheduleMidnightRefresh() {
+  clearTimeout(midnightTimer);
+  const next = new Date();
+  next.setHours(24, 0, 0, 100);
+  midnightTimer = setTimeout(
+    () => void refreshBusinessDate(),
+    Math.max(1000, next.getTime() - Date.now()),
+  );
+}
+async function refreshBusinessDate() {
+  const current = localDateString();
+  if (current !== today) {
+    today = current;
+    if (state.db) await refresh();
+  } else {
+    updateChrome();
+    if (state.db) render();
+  }
+  scheduleMidnightRefresh();
+}
+window.addEventListener("focus", () => void refreshBusinessDate());
+window.addEventListener("pageshow", () => void refreshBusinessDate());
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") void refreshBusinessDate();
+});
+
 async function init() {
-  const theme = localStorage.getItem("leadloop-theme");
+  let theme = "dark";
+  try {
+    theme = localStorage.getItem("leadloop-theme") || "dark";
+  } catch {
+    // Continue without a persisted appearance preference.
+  }
   setTheme(theme === "light" ? "light" : "dark");
   try {
     state.db = await openDatabase();
+    state.db.addEventListener("versionchange", () => {
+      state.db.close();
+      toast(
+        "LeadLoop's database changed in another tab. Reload this tab before continuing.",
+        true,
+      );
+    });
     await refresh();
     await serviceWorker();
+    scheduleMidnightRefresh();
+    if (
+      !state.customers.length &&
+      !state.leads.length &&
+      state.settings.onboardingCompleted !== "true"
+    )
+      showOnboarding();
+    document.documentElement.dataset.appReady = "true";
   } catch (e) {
+    document.documentElement.dataset.appReady = "true";
     console.error("LeadLoop startup failed", e);
     $("#viewContainer").innerHTML =
       `<div class="card empty"><h2>LeadLoop could not open its local database</h2><p>${esc(e.message || "Unexpected database error")}</p><p>Do not clear browser storage if you need to preserve existing records. Close other LeadLoop tabs and reload.</p></div>`;

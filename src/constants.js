@@ -1,5 +1,5 @@
 export const DB_NAME = "leadloop-uk";
-export const DB_VERSION = 3;
+export const DB_VERSION = 4;
 export const CACHE_PREFIX = "leadloop-uk-";
 
 export const STAGES = [
@@ -60,24 +60,28 @@ export const TRADE_CATEGORIES = [
 export const DEFAULT_TEMPLATES = [
   {
     id: "tpl-initial",
+    category: "initial",
     name: "Initial enquiry follow-up",
     subject: "Following up on your {job} enquiry",
     body: "Hi {firstName}, thanks for getting in touch about {job}. Just checking if you have any questions or if you would like to arrange a convenient time. Best wishes, {business}",
   },
   {
     id: "tpl-quote",
+    category: "quote",
     name: "Quotation follow-up",
     subject: "Quotation {quoteRef} for {job}",
     body: "Hi {firstName}, just checking you received quotation {quoteRef} ({quoteTotal}) for {job}. Happy to talk through any details whenever suits you. Thanks, {business}",
   },
   {
     id: "tpl-repeat",
+    category: "repeat",
     name: "Repeat service reminder",
     subject: "Time for your next {job}",
     body: "Hi {firstName}, hope all is well. Your regular {job} is due around {nextRepeat} — let me know which day works best for you and I will get you booked in. Thanks, {business}",
   },
   {
     id: "tpl-postjob",
+    category: "postjob",
     name: "Post-job check-in",
     subject: "Thank you from {business}",
     body: "Hi {firstName}, thanks again for having me round for your {job}. Please let me know if you need anything else in future. Best wishes, {business}",
@@ -86,6 +90,9 @@ export const DEFAULT_TEMPLATES = [
 
 export const DEFAULT_SETTINGS = {
   business: "",
+  businessType: "Other Service",
+  onboardingCompleted: "false",
+  defaultTemplateId: "tpl-initial",
   ownerName: "",
   email: "",
   phone: "",
